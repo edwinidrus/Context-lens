@@ -1,0 +1,12 @@
+{
+  "name": "context-lens",
+  "displayName": "Context-Lens",
+  "version": "1.1.0",
+  "description": "Visualize context rot in a Claude Code session (LOCA-bench signals) with a live HTML dashboard, statusline gauge, and zone-crossing awareness for you and the model.",
+  "author": {
+    "name": "Edwin Hartarto",
+    "email": "edwin.hartarto91@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": ["context", "context-rot", "tokens", "dashboard", "observability", "loca-bench", "statusline"]
+}

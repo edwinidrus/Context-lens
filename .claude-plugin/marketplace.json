@@ -1,0 +1,15 @@
+{
+  "name": "context-lens",
+  "description": "Context-rot observability for Claude Code — live dashboard, statusline gauge, and awareness signals from LOCA-bench.",
+  "owner": {
+    "name": "Edwin Hartarto",
+    "email": "edwin.hartarto91@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "context-lens",
+      "source": ".",
+      "description": "Visualize context rot in a Claude Code session with a live HTML dashboard, statusline gauge, and zone-crossing awareness."
+    }
+  ]
+}
