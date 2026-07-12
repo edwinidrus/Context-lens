@@ -6,6 +6,8 @@ All notable changes to Context-Lens. Versioning is [SemVer](https://semver.org);
 ## [Unreleased]
 
 ### Added
+- Opt-in experimental Codex rollout metadata adapter for a partial context-token gauge and S1,
+  with bounded numeric-only parsing, visible confidence limits, and schema-drift fallback.
 - Long-term vendor-neutral product vision and phased roadmap for Claude Code, Codex, OpenCode,
   recovery workflows, and an adapter ecosystem.
 - Contributor guidance and repository instructions for consistent future development.

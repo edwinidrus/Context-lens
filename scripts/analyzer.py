@@ -18,8 +18,8 @@ import webbrowser
 from pathlib import Path
 
 # ponytail: full Claude transcript reparse each turn — measured 7.4ms/MB; revisit
-# offset-resume only if transcripts hit ~50MB. Codex transcripts are explicitly not a
-# stable hook interface, so its adapter consumes lifecycle payloads only.
+# offset-resume only if transcripts hit ~50MB. The opt-in Codex adapter reads a bounded
+# rollout tail and extracts numeric token_count records only; that source is experimental.
 DEFAULT_CACHE_ROOT = Path.home() / ".context-lens"
 LEGACY_CLAUDE_CACHE_ROOT = Path.home() / ".claude" / "context-lens"
 CACHE_ROOT = Path(os.environ.get("CONTEXT_LENS_CACHE_ROOT", DEFAULT_CACHE_ROOT))
@@ -33,6 +33,13 @@ RECENT_ENDED_SECONDS = 24 * 60 * 60
 RECENT_ENDED_LIMIT = 20
 STALE_RUNNING_SECONDS = 5 * 60  # display-only estimate; never treated as SessionEnd
 CODEX_INACTIVE_SECONDS = 30 * 60  # no SessionEnd hook exists; UI-only estimate
+CODEX_EXPERIMENTAL_ENV = "CONTEXT_LENS_EXPERIMENTAL_CODEX_TRANSCRIPT"
+CODEX_ROLLOUT_TAIL_BYTES = 8 * 1024 * 1024
+CODEX_OBSERVATION_KEYS = {
+    "context_tokens", "context_window_tokens", "context_window_source",
+    "context_window_exact", "context_telemetry_confidence", "context_observed_at",
+    "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens",
+}
 
 # ponytail: calibration knobs, not constants — LOCA-bench thresholds shift per task type
 S1_RAMP = [(0, 0), (32_000, 0), (96_000, 50), (128_000, 85), (160_000, 100)]
@@ -66,6 +73,83 @@ def _positive_int(value):
     except (TypeError, ValueError, OverflowError):
         return None
     return number if number > 0 else None
+
+
+def _nonnegative_int(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if number >= 0 else None
+
+
+def codex_experimental_enabled():
+    return os.environ.get(CODEX_EXPERIMENTAL_ENV, "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def codex_token_observation(hook):
+    """Extract only numeric token metadata from the bounded tail of a Codex rollout.
+
+    Codex documents transcript_path but explicitly does not stabilize the transcript
+    schema. This parser is therefore opt-in, best-effort, content-blind, and fail-open:
+    schema drift returns None so lifecycle monitoring keeps working.
+    """
+    if not codex_experimental_enabled() or not isinstance(hook, dict):
+        return None
+    raw_path = hook.get("transcript_path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    try:
+        path = Path(raw_path)
+        size = path.stat().st_size
+        start = max(0, size - CODEX_ROLLOUT_TAIL_BYTES)
+        with path.open("rb") as stream:
+            stream.seek(start)
+            rows = stream.read().splitlines()
+        if start and rows:
+            rows = rows[1:]  # the first row may begin in the middle of a JSON object
+    except OSError:
+        return None
+
+    for raw in reversed(rows):
+        try:
+            item = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        payload = item.get("payload") if item.get("type") == "event_msg" else None
+        if not isinstance(payload, dict) or payload.get("type") != "token_count":
+            continue
+        info = payload.get("info")
+        latest = info.get("last_token_usage") if isinstance(info, dict) else None
+        if not isinstance(latest, dict):
+            continue
+        total = _positive_int(latest.get("total_tokens"))
+        window = _positive_int(info.get("model_context_window"))
+        if not total or not window:
+            continue
+        observation = {
+            "context_tokens": total,
+            "context_window_tokens": window,
+            "context_window_source": "Codex rollout token_count (experimental)",
+            "context_window_exact": True,
+            "context_telemetry_confidence": "experimental; transcript schema is unstable",
+        }
+        if isinstance(item.get("timestamp"), str):
+            observation["context_observed_at"] = item["timestamp"]
+        for source_key, target_key in (
+                ("input_tokens", "input_tokens"),
+                ("cached_input_tokens", "cached_input_tokens"),
+                ("output_tokens", "output_tokens"),
+                ("reasoning_output_tokens", "reasoning_output_tokens")):
+            value = _nonnegative_int(latest.get(source_key))
+            if value is not None:
+                observation[target_key] = value
+        return observation
+    return None
 
 
 def detect_context_window(*objects):
@@ -450,7 +534,8 @@ def hook_host(hook):
     return "claude-code" if model.startswith("claude-") else "codex" if model else "claude-code"
 
 
-def summary_from_event(hook, phase, analysis=None, lifecycle="active", end_reason=None):
+def summary_from_event(hook, phase, analysis=None, lifecycle="active", end_reason=None,
+                       codex_observation=None):
     """Create the privacy-minimized monitor record. Raw observations and derived
     scores are deliberately separate; transcript text, tool targets, and full paths
     never enter this file."""
@@ -515,21 +600,53 @@ def summary_from_event(hook, phase, analysis=None, lifecycle="active", end_reaso
             "session_end": "available",
         }
     elif host == "codex":
-        # Codex exposes stable lifecycle payloads but no context-token/S1-S4 telemetry to
-        # interactive hooks. Its transcript path is intentionally not parsed because the
-        # published hook contract labels that format unstable.
+        # Stable hooks provide lifecycle metadata only. An explicit opt-in may add a
+        # content-blind numeric observation from the unstable rollout schema.
         observations.setdefault("tool_events", 0)
         observations.setdefault("turns_completed", 0)
         observations.setdefault("compactions_observed", 0)
-        signals = {}
         health = {}
-        coverage = {
-            "lifecycle": "available (no SessionEnd event)",
-            "context_tokens": "unavailable",
-            "signals": "unavailable",
-            "session_end": "unavailable; inactivity is estimated from freshness",
-            "note": "Codex hook telemetry does not expose stable context-token or S1-S4 inputs.",
-        }
+        if codex_experimental_enabled():
+            if codex_observation:
+                observations.update(codex_observation)
+            total = _positive_int(observations.get("context_tokens"))
+            window = _positive_int(observations.get("context_window_tokens"))
+            if total and window and observations.get("context_window_source"):
+                signals = {
+                    "s1_load": s1_load(total),
+                    "s2_exploration": None,
+                    "s3_dead_weight": None,
+                    "s4_instruction_distance": None,
+                    "experimental": True,
+                }
+                coverage = {
+                    "lifecycle": "available (no SessionEnd event)",
+                    "context_tokens": "experimental (Codex rollout token_count)",
+                    "signals": "partial (experimental S1 only; S2-S4 unavailable)",
+                    "session_end": "unavailable; inactivity is estimated from freshness",
+                    "note": ("Context usage and S1 come from an opt-in numeric rollout record; "
+                             "the Codex transcript schema is not stable."),
+                }
+            else:
+                signals = {}
+                coverage = {
+                    "lifecycle": "available (no SessionEnd event)",
+                    "context_tokens": "pending experimental token_count observation",
+                    "signals": "pending experimental S1 observation",
+                    "session_end": "unavailable; inactivity is estimated from freshness",
+                    "note": "No compatible Codex token_count record was found in the rollout tail.",
+                }
+        else:
+            for key in CODEX_OBSERVATION_KEYS:
+                observations.pop(key, None)
+            signals = {}
+            coverage = {
+                "lifecycle": "available (no SessionEnd event)",
+                "context_tokens": "unavailable",
+                "signals": "unavailable",
+                "session_end": "unavailable; inactivity is estimated from freshness",
+                "note": "Codex hook telemetry does not expose stable context-token or S1-S4 inputs.",
+            }
     else:
         coverage.setdefault("lifecycle", "available")
         coverage.setdefault("context_tokens", "pending first analyzed event")
@@ -550,7 +667,8 @@ def summary_from_event(hook, phase, analysis=None, lifecycle="active", end_reaso
 def track_event(hook, phase, analysis=None, lifecycle="active", end_reason=None, increments=None):
     """Persist one session summary and best-effort refresh the shared monitor."""
     sid = hook.get("session_id") or Path(hook.get("transcript_path", "unknown")).stem
-    summary = summary_from_event(hook, phase, analysis, lifecycle, end_reason)
+    observation = codex_token_observation(hook) if hook_host(hook) == "codex" else None
+    summary = summary_from_event(hook, phase, analysis, lifecycle, end_reason, observation)
     for key, amount in (increments or {}).items():
         current = summary["observations"].get(key, 0)
         summary["observations"][key] = (current if isinstance(current, int) else 0) + amount
@@ -818,22 +936,34 @@ svg {{ display:block }} a {{ color:var(--s1) }}</style></head><body>
 
 
 def render_codex_report(summary):
-    """Per-session Codex surface. It intentionally shows lifecycle coverage instead of
-    manufacturing a rot score from the unstable transcript format."""
+    """Per-session Codex surface with capability-aware, explicitly partial telemetry."""
     ident, life = summary.get("identity") or {}, summary.get("lifecycle") or {}
-    obs, coverage = summary.get("observations") or {}, summary.get("coverage") or {}
+    obs, signals = summary.get("observations") or {}, summary.get("signals") or {}
+    coverage = summary.get("coverage") or {}
     project = html.escape(str(ident.get("project", "unknown")))
     model = html.escape(str(friendly_model(ident.get("model"))))
     sid = html.escape(str(ident.get("session_id", "unknown"))[:8])
     phase = html.escape(str(life.get("phase", "unknown")).replace("_", " "))
     note = html.escape(str(coverage.get("note", "Codex health telemetry is unavailable.")))
+    total = _positive_int(obs.get("context_tokens"))
+    window = _positive_int(obs.get("context_window_tokens"))
+    partial = bool(total and window and signals.get("experimental"))
+    if partial:
+        pct = min(100, round(total / window * 100))
+        telemetry = f'''<div class="card"><div class="muted">EXPERIMENTAL CONTEXT LOAD</div>
+<div class="phase">{pct}%</div><div class="gauge"><i style="width:{pct}%"></i></div>
+<div>{total/1000:.1f}K / {window/1000:.1f}K tokens · experimental S1 {signals.get("s1_load", "—")}</div>
+<p class="muted">{note}</p><p class="muted">S2–S4 and the combined rot score remain unavailable.</p></div>'''
+    else:
+        telemetry = f'''<div class="card"><b>Health score unavailable</b><p>{note}</p>
+<p class="muted">Context tokens and S1–S4 require explicit experimental Codex rollout access until stable hook telemetry exists.</p></div>'''
     now = datetime.datetime.now().strftime("%H:%M:%S")
     return f'''<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="2"><title>Context Lens · Codex</title><style>
 :root{{--surface:#fcfcfb;--plane:#f9f9f7;--ink:#0b0b0b;--muted:#706f6a;--grid:#e1e0d9;--accent:#2a78d6}}
 @media(prefers-color-scheme:dark){{:root{{--surface:#1a1a19;--plane:#0d0d0d;--ink:#fff;--muted:#aaa99f;--grid:#2c2c2a;--accent:#3987e5}}}}
 *{{box-sizing:border-box}}body{{font:14px/1.5 system-ui,sans-serif;background:var(--plane);color:var(--ink);max-width:720px;margin:auto;padding:24px}}
-.card{{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:18px 20px;margin-bottom:12px}}h1{{font-size:17px;margin:0}}.muted{{color:var(--muted);font-size:12px}}.phase{{font-size:38px;font-weight:700;margin:8px 0}}.metrics{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}}.metrics b{{display:block;font-size:22px}}a{{color:var(--accent)}}
+.card{{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:18px 20px;margin-bottom:12px}}h1{{font-size:17px;margin:0}}.muted{{color:var(--muted);font-size:12px}}.phase{{font-size:38px;font-weight:700;margin:8px 0}}.metrics{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}}.metrics b{{display:block;font-size:22px}}.gauge{{height:12px;background:var(--grid);border-radius:6px;overflow:hidden;margin:8px 0}}.gauge i{{display:block;height:100%;background:var(--accent)}}a{{color:var(--accent)}}
 </style></head><body><div class="card"><h1>Context Lens · Codex <span class="muted">⟳ live · {now}</span></h1>
 <div>{project} · {model} · session {sid} · <a href="../all-sessions.html">all sessions</a></div></div>
 <div class="card"><div class="muted">SESSION PHASE</div><div class="phase">{phase}</div>
@@ -841,8 +971,7 @@ def render_codex_report(summary):
 <div class="card metrics"><div><b>{obs.get("turns_completed", 0)}</b><span class="muted">turns completed</span></div>
 <div><b>{obs.get("tool_events", 0)}</b><span class="muted">tool events</span></div>
 <div><b>{obs.get("compactions_observed", 0)}</b><span class="muted">compactions</span></div></div>
-<div class="card"><b>Health score unavailable</b><p>{note}</p>
-<p class="muted">Context tokens and S1–S4 remain explicitly unavailable until Codex exposes stable hook telemetry for those inputs.</p></div>
+{telemetry}
 </body></html>'''
 
 
@@ -908,9 +1037,13 @@ def overview_card(item, now):
     ident, life = item.get("identity") or {}, item.get("lifecycle") or {}
     obs, sig, health = item.get("observations") or {}, item.get("signals") or {}, item.get("health") or {}
     coverage = item.get("coverage") or {}
-    zone = health.get("zone") if health.get("zone") in ("GREEN", "AMBER", "RED") else "UNAVAILABLE"
+    experimental = bool(sig.get("experimental") and
+                        str(coverage.get("context_tokens", "")).startswith("experimental"))
+    zone = health.get("zone") if health.get("zone") in ("GREEN", "AMBER", "RED") else \
+        ("PARTIAL" if experimental else "UNAVAILABLE")
     score = html.escape(str(health.get("rot_score", "—")))
-    color = {"GREEN": "var(--good)", "AMBER": "var(--warning)", "RED": "var(--critical)"}.get(zone, "var(--muted)")
+    color = {"GREEN": "var(--good)", "AMBER": "var(--warning)", "RED": "var(--critical)",
+             "PARTIAL": "var(--link)"}.get(zone, "var(--muted)")
     phase = str(life.get("phase", "unknown")).replace("_", " ")
     age_seconds = (now - parse_timestamp(life.get("last_event_at"))).total_seconds()
     stale = life.get("phase") == "running" and age_seconds > STALE_RUNNING_SECONDS
@@ -933,7 +1066,11 @@ def overview_card(item, now):
                              ("s1_load", "s2_exploration", "s3_dead_weight", "s4_instruction_distance"))
     dead = obs.get("dead_weight_percent", 0)
     dead = dead if isinstance(dead, (int, float)) and not isinstance(dead, bool) else 0
-    if coverage.get("context_tokens") == "unavailable":
+    if experimental:
+        metric_html = (f'<span>context <b>{total/1000:.1f}K / {window/1000:.1f}K experimental</b></span>'
+                       f'<span>S1 <b>{sig.get("s1_load", "—")}</b></span>'
+                       '<span>S2–S4 <b>unavailable</b></span>')
+    elif coverage.get("context_tokens") in ("unavailable", "pending experimental token_count observation"):
         metric_html = (f'<span>events <b>{obs.get("tool_events", 0)} tools / '
                        f'{obs.get("turns_completed", 0)} turns</b></span>'
                        '<span>context and S1–S4 <b>unavailable</b></span>')

@@ -2,9 +2,6 @@ __pycache__/
 *.pyc
 .claude/settings.local.json
 .claude/*
-milestones/*
 
-##all md but not README.md
-!README.md
-VISION.md
 LINKEDIN-PLAN.md
+screenshot/*

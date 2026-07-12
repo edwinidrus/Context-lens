@@ -16,5 +16,6 @@ python3 "${ROOT}/scripts/analyzer.py" --open-all
 Show the printed `file://…/all-sessions.html` URL to the user as a fallback if their browser did
 not open. The page refreshes every two seconds and is regenerated from privacy-minimized session
 summaries after supported lifecycle events. It never displays prompts, source code, tool output,
-transcript paths, or full working-directory paths. Claude sessions show S1-S4 when available;
-Codex sessions show lifecycle coverage and label context-health scores unavailable.
+transcript paths, or full working-directory paths. Claude sessions show S1-S4 when available.
+Codex sessions are lifecycle-only by default; an opt-in experimental rollout adapter may show
+context tokens and S1, labeled `PARTIAL`, while S2-S4 and the combined score stay unavailable.

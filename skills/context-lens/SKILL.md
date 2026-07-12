@@ -14,8 +14,10 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/analyzer.py" --report
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/analyzer.py" --open
 ```
 
-On Codex, open the current session's lifecycle report. Context-token and S1-S4 telemetry remain
-explicitly unavailable because Codex hooks do not expose stable inputs for those signals:
+On Codex, open the current session report. It is lifecycle-only by default. If the Codex process
+was launched with `CONTEXT_LENS_EXPERIMENTAL_CODEX_TRANSCRIPT=1`, compatible rollout metadata may
+also provide an explicitly experimental context gauge and S1. S2-S4 and the combined score remain
+unavailable:
 
 ```bash
 python3 "${PLUGIN_ROOT}/scripts/analyzer.py" --open-current

@@ -130,10 +130,22 @@ codex plugin marketplace add "$OUT"
 codex plugin add context-lens@context-lens-local
 ```
 
-In the new thread, use `/hooks` to review and trust Context Lens. Run `/context-lens`, submit a
-prompt that uses a tool, and verify the session page progresses through `running` and `waiting`
-while its tool/turn counters increase. Run `/context-lens-monitor` and confirm the Codex card shows
-the project basename, `codex`, model, lifecycle phase, and `context and S1–S4 unavailable`.
+In the new thread, use `/hooks` to review and trust Context Lens. Use `/skills` to select
+`context-lens:context-lens` (or type `$context-lens:context-lens`), submit a prompt that uses a tool,
+and verify the session page progresses through `running` and `waiting` while its tool/turn counters
+increase. Select `context-lens:context-lens-monitor` and confirm the Codex card shows the project
+basename, `codex`, model, lifecycle phase, and `context and S1–S4 unavailable`.
+
+Repeat from a newly launched opt-in process:
+
+```bash
+CONTEXT_LENS_EXPERIMENTAL_CODEX_TRANSCRIPT=1 codex
+```
+
+After a completed turn, confirm a compatible rollout shows a **PARTIAL** card, token gauge, and
+experimental S1. Confirm S2–S4 and the combined rot score remain unavailable. If the installed
+Codex build emits no compatible `token_count` record, confirm the card remains lifecycle-only with
+a pending/unavailable note and no hook failure.
 
 Inspect `~/.context-lens/<session-id>/summary.json` and confirm it contains no prompt, tool input,
 tool response, transcript path, or full working-directory path. Permission prompts should move the

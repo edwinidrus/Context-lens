@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """One runnable check for analyzer.py — fixture transcript + boundary asserts."""
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -67,6 +68,27 @@ def hot_fixture(path):
         entry("user", [{"type": "tool_result", "tool_use_id": "h2", "content": big}]),
     ]
     path.write_text("\n".join(json.dumps(r) for r in rows))
+
+
+def codex_fixture(path):
+    rows = [
+        {"type": "response_item", "payload": {"private_prompt": "do not persist me"}},
+        {"timestamp": "2026-07-12T08:00:00+00:00", "type": "event_msg", "payload": {
+            "type": "token_count", "info": {
+                "last_token_usage": {"input_tokens": 80_000, "cached_input_tokens": 10_000,
+                                     "output_tokens": 3_000, "reasoning_output_tokens": 2_000,
+                                     "total_tokens": 95_000},
+                "model_context_window": 200_000}}},
+        {"type": "event_msg", "payload": {"type": "private_tool_output",
+                                             "text": "secret source output"}},
+        {"timestamp": "2026-07-12T08:01:00+00:00", "type": "event_msg", "payload": {
+            "type": "token_count", "info": {
+                "last_token_usage": {"input_tokens": 112_000, "cached_input_tokens": 12_000,
+                                     "output_tokens": 4_000, "reasoning_output_tokens": 2_000,
+                                     "total_tokens": 130_000},
+                "model_context_window": 200_000}}},
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows))
 
 
 def main():
@@ -348,7 +370,8 @@ def main():
     assert "--session-end" in hooks["SessionEnd"][0]["hooks"][0]["command"]
     assert "--notification" in hooks["Notification"][0]["hooks"][0]["command"]
 
-    # --- Codex adapter: stable hook metadata only, no unstable transcript parsing ---
+    # --- Codex adapter: lifecycle-only by default ---
+    saved_codex_experimental = os.environ.pop(analyzer.CODEX_EXPERIMENTAL_ENV, None)
     with tempfile.TemporaryDirectory() as td:
         analyzer.CACHE_ROOT = Path(td) / "cache"
         ch = {"_context_lens_host": "codex", "session_id": "codex-one",
@@ -390,6 +413,56 @@ def main():
         overview = analyzer.render_overview(active, ended)
         assert "Inactive (estimated)" in overview and "codex · GPT 5.4" in overview
         assert "context and S1–S4 <b>unavailable" in overview
+
+    # Explicit opt-in reads only numeric token_count metadata from the rollout tail.
+    os.environ[analyzer.CODEX_EXPERIMENTAL_ENV] = "1"
+    with tempfile.TemporaryDirectory() as td:
+        analyzer.CACHE_ROOT = Path(td) / "cache"
+        rollout = Path(td) / "rollout.jsonl"
+        codex_fixture(rollout)
+        ch = {"_context_lens_host": "codex", "session_id": "codex-experimental",
+              "transcript_path": str(rollout), "cwd": "/workspace/codex-experimental",
+              "model": "gpt-5.4"}
+        observation = analyzer.codex_token_observation(ch)
+        assert observation["context_tokens"] == 130_000
+        assert observation["context_window_tokens"] == 200_000
+        assert observation["input_tokens"] == 112_000
+        assert "private" not in json.dumps(observation) and "secret" not in json.dumps(observation)
+
+        analyzer.session_start({**ch, "hook_event_name": "SessionStart"})
+        analyzer.update({**ch, "hook_event_name": "Stop"})
+        codex = analyzer.load_summary("codex-experimental")
+        assert codex["observations"]["context_tokens"] == 130_000
+        assert codex["signals"]["s1_load"] == analyzer.s1_load(130_000)
+        assert codex["signals"]["s2_exploration"] is None
+        assert codex["signals"]["s3_dead_weight"] is None
+        assert codex["signals"]["s4_instruction_distance"] is None
+        assert not codex["health"]
+        assert codex["coverage"]["context_tokens"].startswith("experimental")
+        serialized = json.dumps(codex)
+        assert "do not persist me" not in serialized and "secret source output" not in serialized
+
+        report = (analyzer.session_dir("codex-experimental") / "report.html").read_text()
+        assert "EXPERIMENTAL CONTEXT LOAD" in report and "130.0K / 200.0K tokens" in report
+        assert "experimental S1" in report and "combined rot score remain unavailable" in report
+        active, ended = analyzer.read_summaries()
+        overview = analyzer.render_overview(active, ended)
+        assert "PARTIAL · R—" in overview and "130.0K / 200.0K experimental" in overview
+        assert "S2–S4 <b>unavailable" in overview
+
+        incompatible = Path(td) / "incompatible.jsonl"
+        incompatible.write_text(json.dumps({"type": "event_msg", "payload": {
+            "type": "token_count", "info": {"new_schema": True}}}))
+        bad = {**ch, "session_id": "codex-schema-drift", "transcript_path": str(incompatible)}
+        analyzer.session_start({**bad, "hook_event_name": "SessionStart"})
+        drift = analyzer.load_summary("codex-schema-drift")
+        assert not drift["signals"] and not drift["health"]
+        assert drift["coverage"]["context_tokens"].startswith("pending experimental")
+
+    if saved_codex_experimental is None:
+        os.environ.pop(analyzer.CODEX_EXPERIMENTAL_ENV, None)
+    else:
+        os.environ[analyzer.CODEX_EXPERIMENTAL_ENV] = saved_codex_experimental
 
     codex_manifest = json.loads((Path(__file__).parent / ".codex-plugin" / "plugin.json").read_text())
     assert codex_manifest["name"] == "context-lens" and codex_manifest["version"] == "1.3.0"
