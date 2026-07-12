@@ -5,26 +5,34 @@ Signals map to LOCA-bench (arXiv 2602.07962v1) failure modes; see ARCHITECTURE.m
 Stdlib only: this runs inline from hooks/statusline and must stay fast and dep-free.
 """
 import datetime
+import html
 import json
+import os
 import platform
 import re
 import statistics
 import subprocess
 import sys
+import time
 import webbrowser
 from pathlib import Path
 
-# ponytail: full reparse each turn — measured 7.4ms/MB; revisit offset-resume only if
-# transcripts hit ~50MB. state.json keeps only what a reparse can't recover.
-CACHE_ROOT = Path.home() / ".claude" / "context-lens"
-WINDOW = 200_000  # ponytail: knob — hook input carries no window size; 1M models exist
-
-MODEL_NAMES = {
-    "claude-opus-4-8": "Opus 4.8",
-    "claude-fable-5": "Fable 5",
-    "claude-sonnet-5": "Sonnet 5",
-    "claude-haiku-4-5-20251001": "Haiku 4.5",
-}
+# ponytail: full Claude transcript reparse each turn — measured 7.4ms/MB; revisit
+# offset-resume only if transcripts hit ~50MB. Codex transcripts are explicitly not a
+# stable hook interface, so its adapter consumes lifecycle payloads only.
+DEFAULT_CACHE_ROOT = Path.home() / ".context-lens"
+LEGACY_CLAUDE_CACHE_ROOT = Path.home() / ".claude" / "context-lens"
+CACHE_ROOT = Path(os.environ.get("CONTEXT_LENS_CACHE_ROOT", DEFAULT_CACHE_ROOT))
+DEFAULT_CONTEXT_WINDOW = 200_000
+# Backward-compatible calibration alias. Rendering and summaries use the per-session
+# value returned by detect_context_window(), never this value as a model catalogue.
+WINDOW = DEFAULT_CONTEXT_WINDOW
+SUMMARY_SCHEMA = "context-lens.session-summary.v1"
+LEGACY_SUMMARY_SCHEMA = "context-lens.claude-session-summary.v1"
+RECENT_ENDED_SECONDS = 24 * 60 * 60
+RECENT_ENDED_LIMIT = 20
+STALE_RUNNING_SECONDS = 5 * 60  # display-only estimate; never treated as SessionEnd
+CODEX_INACTIVE_SECONDS = 30 * 60  # no SessionEnd hook exists; UI-only estimate
 
 # ponytail: calibration knobs, not constants — LOCA-bench thresholds shift per task type
 S1_RAMP = [(0, 0), (32_000, 0), (96_000, 50), (128_000, 85), (160_000, 100)]
@@ -36,6 +44,85 @@ def est_tokens(obj):
     if isinstance(obj, str):
         return len(obj) // 4
     return len(json.dumps(obj, ensure_ascii=False)) // 4
+
+
+def model_id(value):
+    """Return a provider-neutral model identifier from common runtime shapes."""
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        for key in ("id", "model_id", "name", "display_name"):
+            found = value.get(key)
+            if isinstance(found, str) and found.strip():
+                return found.strip()
+    return None
+
+
+def _positive_int(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if number > 0 else None
+
+
+def detect_context_window(*objects):
+    """Detect an explicitly advertised context capacity without a model-name table.
+
+    Providers and local runtimes use different model IDs, and open-weight servers can
+    configure different limits for the same weights. Only explicit metadata is treated
+    as exact; CONTEXT_LENS_CONTEXT_WINDOW is the local, deployment-specific override.
+    """
+    configured = _positive_int(os.environ.get("CONTEXT_LENS_CONTEXT_WINDOW"))
+    if configured:
+        return configured, "environment override", True
+
+    scalar_keys = {
+        "context_window_tokens", "contextWindowTokens", "context_window_size",
+        "contextWindowSize", "max_context_tokens", "maxContextTokens",
+        "context_length", "contextLength", "n_ctx",
+    }
+    container_keys = {"context_window", "contextWindow"}
+    nested_keys = {"metadata", "model", "capabilities", "config", "configuration", "limits", "usage"}
+    inner_keys = ("tokens", "size", "max_tokens", "maxTokens", "total_tokens", "totalTokens")
+
+    def visit(value):
+        if not isinstance(value, dict):
+            return None
+        for key in scalar_keys:
+            found = _positive_int(value.get(key))
+            if found:
+                return found
+        for key in container_keys:
+            item = value.get(key)
+            found = _positive_int(item)
+            if found:
+                return found
+            if isinstance(item, dict):
+                for inner in inner_keys:
+                    found = _positive_int(item.get(inner))
+                    if found:
+                        return found
+                found = visit(item)
+                if found:
+                    return found
+        for key in nested_keys:
+            found = visit(value.get(key))
+            if found:
+                return found
+        return None
+
+    for obj in objects:
+        found = visit(obj)
+        if found:
+            return found, "runtime metadata", True
+    return DEFAULT_CONTEXT_WINDOW, "default estimate", False
+
+
+def format_tokens(tokens):
+    return f"{tokens / 1_000_000:g}M" if tokens >= 1_000_000 else f"{tokens / 1000:g}K"
 
 
 def tool_target(name, tool_input):
@@ -50,6 +137,7 @@ def parse_transcript(path):
     result_tokens = {}  # tool_use_id -> tokens of its result
     total = 0
     model = None
+    context_window = None
     running = 0         # est-token cursor over the whole transcript (for S4 distance)
     last_instr = 0      # cursor value at the last genuine user instruction
     turn_tools = []     # tool_use count per assistant turn (for S2 cadence)
@@ -61,6 +149,9 @@ def parse_transcript(path):
         if d.get("isSidechain") or d.get("type") not in ("user", "assistant"):
             continue
         msg = d.get("message") or {}
+        advertised_window, _, exact_window = detect_context_window(d, msg)
+        if exact_window:
+            context_window = advertised_window
         content = msg.get("content")
         if d["type"] == "assistant":
             u = msg.get("usage") or {}
@@ -68,8 +159,9 @@ def parse_transcript(path):
                  + u.get("cache_read_input_tokens", 0))
             if t:
                 total = t  # latest main-chain entry = live context (exact)
-            if msg.get("model"):
-                model = msg["model"]
+            detected_model = model_id(msg.get("model")) or model_id(d.get("model"))
+            if detected_model:
+                model = detected_model
             tcount = 0
             for b in content or []:
                 bt = b.get("type")
@@ -120,7 +212,7 @@ def parse_transcript(path):
         dead_tokens += dead
         dead_items.append((dead, f"{tool} {target} x{len(uids)}"))
     dead_items.sort(reverse=True)
-    return {"total": total, "model": model, "comp": comp,
+    return {"total": total, "model": model, "context_window": context_window, "comp": comp,
             "dead_tokens": dead_tokens, "dead_items": dead_items[:3], "dup_reads": dup_reads,
             "instr_distance": running - last_instr, "turn_tools": turn_tools}
 
@@ -188,7 +280,8 @@ def dead_pct(d):
 def user_message(d):
     """One-line user-facing warning on a zone crossing (systemMessage)."""
     return (f"{ZONE_ICON[d['zone']]} context rot {d['zone']} (R={d['r']}): "
-            f"{dead_pct(d)}% dead tool output, {d['total']/1000:.0f}K/{WINDOW//1000}K tokens")
+            f"{dead_pct(d)}% dead tool output, {d['total']/1000:.0f}K/"
+            f"{format_tokens(d['context_window'])} tokens")
 
 
 def compaction_diff(pc, d):
@@ -210,7 +303,7 @@ def compaction_diff(pc, d):
 def awareness_note(d):
     """~90-token model-facing context-awareness note (ARCHITECTURE §4.5)."""
     return (f"[context-lens] Context status: {d['zone']} (rot score {d['r']}/100).\n"
-            f"Live context: {d['total']/1000:.0f}K/{WINDOW//1000}K tokens. "
+            f"Live context: {d['total']/1000:.0f}K/{format_tokens(d['context_window'])} tokens. "
             f"{dead_pct(d)}% is superseded tool output.\n"
             "Known effects at this level: exploration plateaus, early constraints fade.\n"
             "Recommended: batch remaining lookups into single Bash pipelines; "
@@ -219,7 +312,22 @@ def awareness_note(d):
 
 
 def friendly_model(mid):
-    return MODEL_NAMES.get(mid, mid or "unknown")
+    """Create a readable label for any provider or open-weight model ID."""
+    mid = model_id(mid)
+    if not mid:
+        return "unknown"
+    words = [word for word in re.split(r"[/_: -]+", mid) if word]
+    rendered = []
+    for word in words:
+        if word.isdigit() and rendered and re.fullmatch(r"\d+(?:\.\d+)*", rendered[-1]):
+            rendered[-1] += "." + word
+        elif re.fullmatch(r"\d+[bBkKmM]", word):
+            rendered.append(word[:-1] + word[-1].upper())
+        elif word.lower() in {"ai", "gpt", "llm"}:
+            rendered.append(word.upper())
+        else:
+            rendered.append(word[:1].upper() + word[1:])
+    return " ".join(rendered)
 
 
 def find_transcript():
@@ -230,8 +338,15 @@ def find_transcript():
     return files[-1]
 
 
-def analyze(path):
+def analyze(path, runtime=None):
     d = parse_transcript(path)
+    runtime_model = model_id((runtime or {}).get("model")) if isinstance(runtime, dict) else None
+    if runtime_model and not d["model"]:
+        d["model"] = runtime_model
+    window, source, exact = detect_context_window(runtime, {"context_window_tokens": d["context_window"]})
+    d["context_window"] = window
+    d["context_window_source"] = source
+    d["context_window_exact"] = exact
     d["s1"] = s1_load(d["total"])
     d["s2"] = s2_exploration(d["turn_tools"], d["s1"])
     d["s3"] = s3_dead_weight(d["dead_tokens"], d["total"])
@@ -281,18 +396,196 @@ def load_state(session_id):
     try:
         return json.loads(f.read_text())
     except (OSError, json.JSONDecodeError):
+        # Preserve the v1.x Claude experience after moving new multi-host state to a
+        # neutral root. Tests/custom roots never consult a real user's legacy cache.
+        if CACHE_ROOT == DEFAULT_CACHE_ROOT:
+            try:
+                return json.loads((LEGACY_CLAUDE_CACHE_ROOT / session_id / "state.json").read_text())
+            except (OSError, json.JSONDecodeError):
+                pass
         return {}
+
+
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def atomic_write(path, text):
+    """Replace a cache artifact atomically so browsers and parallel hooks never see
+    a partially written JSON/HTML file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def valid_summary(d):
+    return (isinstance(d, dict) and d.get("schema") in (SUMMARY_SCHEMA, LEGACY_SUMMARY_SCHEMA)
+            and all(isinstance(d.get(k, {}), dict)
+                    for k in ("identity", "lifecycle", "observations", "signals", "health")))
+
+
+def load_summary(session_id):
+    f = session_dir(session_id) / "summary.json"
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+        return d if valid_summary(d) else {}
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return {}
+
+
+def hook_host(hook):
+    """Capability detection belongs at the adapter edge, not in scoring/rendering."""
+    if hook.get("_context_lens_host") in ("claude-code", "codex"):
+        return hook["_context_lens_host"]
+    if os.environ.get("PLUGIN_ROOT") or hook.get("turn_id"):
+        return "codex"
+    model = str(hook.get("model") or "")
+    return "claude-code" if model.startswith("claude-") else "codex" if model else "claude-code"
+
+
+def summary_from_event(hook, phase, analysis=None, lifecycle="active", end_reason=None):
+    """Create the privacy-minimized monitor record. Raw observations and derived
+    scores are deliberately separate; transcript text, tool targets, and full paths
+    never enter this file."""
+    sid = hook.get("session_id") or Path(hook.get("transcript_path", "unknown")).stem
+    previous = load_summary(sid)
+    host = hook_host(hook)
+    now = utc_now()
+    cwd = hook.get("cwd")
+    identity = dict(previous.get("identity") or {})
+    identity.update({
+        "host": host,
+        "session_id": sid,
+        "project": Path(cwd).name if cwd else identity.get("project", "unknown"),
+    })
+    model = (analysis or {}).get("model") or hook.get("model") or identity.get("model")
+    identity["model"] = model
+
+    life = dict(previous.get("lifecycle") or {})
+    life.update({
+        "status": lifecycle,
+        "phase": phase,
+        "last_event": hook.get("hook_event_name", phase),
+        "last_event_at": now,
+    })
+    life.setdefault("started_at", now)
+    if lifecycle == "ended":
+        life["ended_at"] = now
+        life["end_reason"] = end_reason or hook.get("reason", "unknown")
+    else:  # a resumed session becomes active again
+        life["ended_at"] = None
+        life["end_reason"] = None
+
+    observations = dict(previous.get("observations") or {})
+    signals = dict(previous.get("signals") or {})
+    health = dict(previous.get("health") or {})
+    coverage = dict(previous.get("coverage") or {})
+    if analysis:
+        observations = {
+            "context_tokens": analysis["total"],
+            "context_window_tokens": analysis["context_window"],
+            "context_window_source": analysis["context_window_source"],
+            "context_window_exact": analysis["context_window_exact"],
+            "composition_estimated_tokens": analysis["comp"],
+            "dead_weight_estimated_tokens": analysis["dead_tokens"],
+            "dead_weight_percent": dead_pct(analysis),
+            "instruction_distance_estimated_tokens": analysis["instr_distance"],
+            "tool_calls_per_turn": analysis["turn_tools"],
+            "estimate_note": "Character-based token observations are estimates (about +/-15%).",
+        }
+        signals = {
+            "s1_load": analysis["s1"],
+            "s2_exploration": analysis["s2"],
+            "s3_dead_weight": analysis["s3"],
+            "s4_instruction_distance": analysis["s4"],
+            "experimental": True,
+        }
+        health = {"rot_score": analysis["r"], "zone": analysis["zone"]}
+        coverage = {
+            "lifecycle": "available",
+            "context_tokens": "available",
+            "signals": "available (S2-S4 include estimates)",
+            "session_end": "available",
+        }
+    elif host == "codex":
+        # Codex exposes stable lifecycle payloads but no context-token/S1-S4 telemetry to
+        # interactive hooks. Its transcript path is intentionally not parsed because the
+        # published hook contract labels that format unstable.
+        observations.setdefault("tool_events", 0)
+        observations.setdefault("turns_completed", 0)
+        observations.setdefault("compactions_observed", 0)
+        signals = {}
+        health = {}
+        coverage = {
+            "lifecycle": "available (no SessionEnd event)",
+            "context_tokens": "unavailable",
+            "signals": "unavailable",
+            "session_end": "unavailable; inactivity is estimated from freshness",
+            "note": "Codex hook telemetry does not expose stable context-token or S1-S4 inputs.",
+        }
+    else:
+        coverage.setdefault("lifecycle", "available")
+        coverage.setdefault("context_tokens", "pending first analyzed event")
+        coverage.setdefault("signals", "pending first analyzed event")
+        coverage.setdefault("session_end", "available")
+
+    return {
+        "schema": SUMMARY_SCHEMA,
+        "identity": identity,
+        "lifecycle": life,
+        "observations": observations,
+        "signals": signals,
+        "health": health,
+        "coverage": coverage,
+    }
+
+
+def track_event(hook, phase, analysis=None, lifecycle="active", end_reason=None, increments=None):
+    """Persist one session summary and best-effort refresh the shared monitor."""
+    sid = hook.get("session_id") or Path(hook.get("transcript_path", "unknown")).stem
+    summary = summary_from_event(hook, phase, analysis, lifecycle, end_reason)
+    for key, amount in (increments or {}).items():
+        current = summary["observations"].get(key, 0)
+        summary["observations"][key] = (current if isinstance(current, int) else 0) + amount
+    atomic_write(session_dir(sid) / "summary.json", json.dumps(summary, indent=2))
+    if summary["identity"].get("host") == "codex":
+        atomic_write(session_dir(sid) / "report.html", render_codex_report(summary))
+    try:
+        write_overview()
+    except OSError:
+        # The session hook is more important than the derived shared surface. A later
+        # event or --open-all regenerates the monitor from the durable summaries.
+        pass
+    return summary
 
 
 def write_dashboard(sid, a, st, r_history, path):
     """Single render path: persist the given state dict + rewrite report.html. Callers
     own the state (crossing flags, snapshots); this just stamps R/zone/history and writes."""
+    apply_session_window(a, st)
     st["r_history"] = r_history
     st["r"], st["zone"] = a["r"], a["zone"]
     sd = session_dir(sid)
-    (sd / "state.json").write_text(json.dumps(st))
-    (sd / "report.html").write_text(render_html(a, r_history, path))
+    atomic_write(sd / "state.json", json.dumps(st))
+    atomic_write(sd / "report.html", render_html(a, r_history, path))
     return sd / "report.html"
+
+
+def apply_session_window(analysis, state):
+    """Reuse exact capacity observed by another hook surface for this session."""
+    if not analysis.get("context_window_exact") and state.get("context_window_exact"):
+        window = _positive_int(state.get("context_window"))
+        if window:
+            analysis["context_window"] = window
+            analysis["context_window_source"] = state.get("context_window_source", "runtime metadata")
+            analysis["context_window_exact"] = True
 
 
 def update(hook):
@@ -305,10 +598,14 @@ def update(hook):
     a zone crossing to force an extra turn. Injecting at decision time is also when the
     model can act on it. See hooks.json (UserPromptSubmit) + prompt_note().
     """
+    if hook_host(hook) == "codex":
+        track_event(hook, "waiting", increments={"turns_completed": 1})
+        return None
     path = hook["transcript_path"]
     sid = hook.get("session_id") or Path(path).stem
-    a = analyze(path)
+    a = analyze(path, hook)
     st = load_state(sid)
+    apply_session_window(a, st)
     prev_zone = st.get("zone")
     r_history = (st.get("r_history") or [])[-29:] + [a["r"]]   # one entry per completed turn
 
@@ -327,6 +624,7 @@ def update(hook):
         st["pending_note"] = note             # always: the lossy-summary caution matters
 
     write_dashboard(sid, a, st, r_history, path)
+    track_event(hook, "waiting", a)
     return out
 
 
@@ -338,35 +636,76 @@ def refresh(hook):
     ponytail: mid-turn the live token TOTAL can't advance (assistant `usage` lands only at
     turn end); this moves everything else. Continuous total = a server, out of scope.
     """
+    if hook_host(hook) == "codex":
+        track_event(hook, "running", increments={"tool_events": 1})
+        return
     path = hook["transcript_path"]
     sid = hook.get("session_id") or Path(path).stem
-    a = analyze(path)
+    a = analyze(path, hook)
     st = load_state(sid)                              # keep pending_note / pre_compact intact
     r_history = st.get("r_history") or [a["r"]]       # reuse existing; don't grow per tool call
     write_dashboard(sid, a, st, r_history, path)
+    track_event(hook, "running", a)
 
 
 def precompact(hook):
     """PreCompact entry (manual+auto): snapshot pre-compaction total + dead weight so the
     next Stop can report what /compact removed. No stdout."""
+    if hook_host(hook) == "codex":
+        track_event(hook, "compacting")
+        return
     path = hook["transcript_path"]
     sid = hook.get("session_id") or Path(path).stem
-    a = analyze(path)
+    a = analyze(path, hook)
     st = load_state(sid)
+    apply_session_window(a, st)
     st["pre_compact"] = {"total": a["total"], "dead": a["dead_tokens"]}
-    (session_dir(sid) / "state.json").write_text(json.dumps(st))
+    atomic_write(session_dir(sid) / "state.json", json.dumps(st))
+    track_event(hook, "compacting", a)
 
 
 def prompt_note(hook):
     """UserPromptSubmit entry: deliver a queued awareness note once, then clear it."""
+    if hook_host(hook) == "codex":
+        track_event(hook, "running")
+        return None
     sid = hook.get("session_id", "")
     st = load_state(sid)
     note = st.pop("pending_note", None)
+    track_event(hook, "running")
     if not note:
         return None
-    (session_dir(sid) / "state.json").write_text(json.dumps(st))
+    atomic_write(session_dir(sid) / "state.json", json.dumps(st))
     return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                    "additionalContext": note}}
+
+
+def session_start(hook):
+    track_event(hook, "ready")
+
+
+def session_end(hook):
+    track_event(hook, "ended", lifecycle="ended", end_reason=hook.get("reason"))
+
+
+def notification(hook):
+    ntype = hook.get("notification_type", "notification")
+    if ntype in ("permission_prompt", "elicitation_dialog"):
+        phase = "needs_attention"
+    elif ntype == "idle_prompt":
+        phase = "waiting"
+    else:
+        phase = (load_summary(hook.get("session_id", "")).get("lifecycle") or {}).get("phase", "ready")
+    track_event(hook, phase)
+
+
+def permission_request(hook):
+    track_event(hook, "needs_attention")
+
+
+def postcompact(hook):
+    increments = {"compactions_observed": 1} if hook_host(hook) == "codex" else None
+    track_event(hook, "running", increments=increments)
 
 
 def line(host):
@@ -375,7 +714,13 @@ def line(host):
     pct = cw.get("used_percentage")
     pct = 0 if pct is None else round(pct)
     model = (host.get("model") or {}).get("display_name", "?")
-    st = load_state(host.get("session_id", ""))
+    sid = host.get("session_id", "")
+    st = load_state(sid)
+    window, source, exact = detect_context_window(host)
+    if sid and exact:
+        st.update({"context_window": window, "context_window_source": source,
+                   "context_window_exact": True})
+        atomic_write(session_dir(sid) / "state.json", json.dumps(st))
     bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
     rot = f" · R{st['r']} {st['zone']}" if "r" in st else ""
     icon = ZONE_ICON.get(st.get("zone"), "⚪")
@@ -391,7 +736,9 @@ def render_html(d, r_history, path):
     z = d["zone"]
     zone_color = {"GREEN": "var(--good)", "AMBER": "var(--warning)", "RED": "var(--critical)"}[z]
     total, comp = d["total"], d["comp"]
-    pct = min(100, round(total / WINDOW * 100))
+    window = d["context_window"]
+    pct = min(100, round(total / window * 100))
+    window_note = "" if d["context_window_exact"] else " · capacity estimated"
     comp_total = sum(comp.values()) or 1
     cats = [("tool results", comp["tool_results"], "var(--s1)"),
             ("assistant", comp["assistant_text"], "var(--s2)"),
@@ -442,16 +789,16 @@ h1 {{ font-size:16px }} .sub {{ color:var(--muted); font-size:12px }}
 .lg {{ display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink2); margin:3px 0 }}
 .lg i {{ width:10px; height:10px; border-radius:2px; flex:none }}
 .lg b {{ margin-left:auto; color:var(--ink); font-weight:600; font-variant-numeric:tabular-nums }}
-svg {{ display:block }}</style></head><body>
+svg {{ display:block }} a {{ color:var(--s1) }}</style></head><body>
 <div class="card"><h1>Context-Lens <span class="sub">⟳ live · {now}</span></h1>
 <div>Model: <b>{friendly_model(d["model"])}</b> <span class="sub">({d["model"]})</span>
-<span class="sub" style="float:right">session {Path(path).stem[:8]}</span></div></div>
+<span class="sub" style="float:right">session {Path(path).stem[:8]} · <a href="../all-sessions.html">all sessions</a></span></div></div>
 <div class="card banner" style="border-color:{zone_color}">
 <b style="color:{zone_color}">{ZONE_ICON[z]} {z}</b> — {ZONE_ADVICE[z]}</div>
 <div class="row">
 <div class="card"><div class="sub">CONTEXT WINDOW</div><div class="hero">{pct}%</div>
 <div class="gauge"><i style="width:{pct}%;background:{zone_color}"></i></div>
-<div class="sub">{total/1000:.1f}K / {WINDOW//1000}K tokens · dead weight {dead_pct}%</div></div>
+<div class="sub">{total/1000:.1f}K / {format_tokens(window)} tokens{window_note} · dead weight {dead_pct}%</div></div>
 <div class="card"><div class="sub">ROT SCORE</div>
 <div class="hero" style="color:{zone_color}">{d["r"]}</div>
 <div class="sub">of 100 · S1 load {d["s1"]} · S3 dead {d["s3"]}</div></div>
@@ -468,6 +815,221 @@ svg {{ display:block }}</style></head><body>
 <polyline points="{pts}" fill="none" stroke="var(--s1)" stroke-width="1.2"/>{dots}</svg>
 <div class="sub">gridlines: R40 (AMBER), R70 (RED)</div></div>
 </div></body></html>"""
+
+
+def render_codex_report(summary):
+    """Per-session Codex surface. It intentionally shows lifecycle coverage instead of
+    manufacturing a rot score from the unstable transcript format."""
+    ident, life = summary.get("identity") or {}, summary.get("lifecycle") or {}
+    obs, coverage = summary.get("observations") or {}, summary.get("coverage") or {}
+    project = html.escape(str(ident.get("project", "unknown")))
+    model = html.escape(str(friendly_model(ident.get("model"))))
+    sid = html.escape(str(ident.get("session_id", "unknown"))[:8])
+    phase = html.escape(str(life.get("phase", "unknown")).replace("_", " "))
+    note = html.escape(str(coverage.get("note", "Codex health telemetry is unavailable.")))
+    now = datetime.datetime.now().strftime("%H:%M:%S")
+    return f'''<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="2"><title>Context Lens · Codex</title><style>
+:root{{--surface:#fcfcfb;--plane:#f9f9f7;--ink:#0b0b0b;--muted:#706f6a;--grid:#e1e0d9;--accent:#2a78d6}}
+@media(prefers-color-scheme:dark){{:root{{--surface:#1a1a19;--plane:#0d0d0d;--ink:#fff;--muted:#aaa99f;--grid:#2c2c2a;--accent:#3987e5}}}}
+*{{box-sizing:border-box}}body{{font:14px/1.5 system-ui,sans-serif;background:var(--plane);color:var(--ink);max-width:720px;margin:auto;padding:24px}}
+.card{{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:18px 20px;margin-bottom:12px}}h1{{font-size:17px;margin:0}}.muted{{color:var(--muted);font-size:12px}}.phase{{font-size:38px;font-weight:700;margin:8px 0}}.metrics{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}}.metrics b{{display:block;font-size:22px}}a{{color:var(--accent)}}
+</style></head><body><div class="card"><h1>Context Lens · Codex <span class="muted">⟳ live · {now}</span></h1>
+<div>{project} · {model} · session {sid} · <a href="../all-sessions.html">all sessions</a></div></div>
+<div class="card"><div class="muted">SESSION PHASE</div><div class="phase">{phase}</div>
+<div class="muted">Lifecycle events are observed directly from Codex hooks.</div></div>
+<div class="card metrics"><div><b>{obs.get("turns_completed", 0)}</b><span class="muted">turns completed</span></div>
+<div><b>{obs.get("tool_events", 0)}</b><span class="muted">tool events</span></div>
+<div><b>{obs.get("compactions_observed", 0)}</b><span class="muted">compactions</span></div></div>
+<div class="card"><b>Health score unavailable</b><p>{note}</p>
+<p class="muted">Context tokens and S1–S4 remain explicitly unavailable until Codex exposes stable hook telemetry for those inputs.</p></div>
+</body></html>'''
+
+
+def parse_timestamp(value):
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+
+
+def relative_age(seconds):
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
+def read_summaries(now=None):
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    active, ended = [], []
+    roots = [CACHE_ROOT]
+    if CACHE_ROOT == DEFAULT_CACHE_ROOT and LEGACY_CLAUDE_CACHE_ROOT != CACHE_ROOT:
+        roots.append(LEGACY_CLAUDE_CACHE_ROOT)
+    seen = set()
+    for root in roots:
+        if not root.exists():
+            continue
+        for directory in root.iterdir():
+            if not directory.is_dir():
+                continue
+            try:
+                item = json.loads((directory / "summary.json").read_text(encoding="utf-8"))
+                if not valid_summary(item):
+                    continue
+                ident = item.get("identity") or {}
+                key = (ident.get("host", "claude-code"), ident.get("session_id", directory.name))
+                if key in seen:
+                    continue
+                seen.add(key)
+                item["_directory"] = directory.name
+                item["_report_path"] = str(directory / "report.html")
+                life = item.get("lifecycle") or {}
+                if life.get("status") == "ended":
+                    ended_at = parse_timestamp(life.get("ended_at"))
+                    if (now - ended_at).total_seconds() <= RECENT_ENDED_SECONDS:
+                        ended.append(item)
+                else:
+                    active.append(item)
+            except (OSError, json.JSONDecodeError, AttributeError):
+                continue
+    key = lambda x: parse_timestamp((x.get("lifecycle") or {}).get("last_event_at"))
+    active.sort(key=key, reverse=True)
+    ended.sort(key=key, reverse=True)
+    return active, ended[:RECENT_ENDED_LIMIT]
+
+
+def overview_card(item, now):
+    ident, life = item.get("identity") or {}, item.get("lifecycle") or {}
+    obs, sig, health = item.get("observations") or {}, item.get("signals") or {}, item.get("health") or {}
+    coverage = item.get("coverage") or {}
+    zone = health.get("zone") if health.get("zone") in ("GREEN", "AMBER", "RED") else "UNAVAILABLE"
+    score = html.escape(str(health.get("rot_score", "—")))
+    color = {"GREEN": "var(--good)", "AMBER": "var(--warning)", "RED": "var(--critical)"}.get(zone, "var(--muted)")
+    phase = str(life.get("phase", "unknown")).replace("_", " ")
+    age_seconds = (now - parse_timestamp(life.get("last_event_at"))).total_seconds()
+    stale = life.get("phase") == "running" and age_seconds > STALE_RUNNING_SECONDS
+    phase_label = phase + (" · update stale (estimate)" if stale else "")
+    total = obs.get("context_tokens", 0)
+    total = total if isinstance(total, (int, float)) and not isinstance(total, bool) else 0
+    window = obs.get("context_window_tokens", WINDOW)
+    window = window if isinstance(window, (int, float)) and not isinstance(window, bool) and window > 0 else WINDOW
+    pct = min(100, round(total / window * 100)) if window else 0
+    report_path = Path(item.get("_report_path") or (CACHE_ROOT / item.get("_directory", "") / "report.html"))
+    report = html.escape(report_path.resolve().as_uri(), quote=True)
+    link = f'<a href="{report}">session report →</a>' if report_path.exists() else ""
+    project = html.escape(str(ident.get("project", "unknown")))
+    model = html.escape(str(friendly_model(ident.get("model"))))
+    host = html.escape(str(ident.get("host", "claude-code")))
+    sid = html.escape(str(ident.get("session_id", "unknown"))[:8])
+    reason = html.escape(str(life.get("end_reason") or ""))
+    end_note = f" · ended: {reason}" if life.get("status") == "ended" else ""
+    signal_values = "/".join(html.escape(str(sig.get(k, "—"))) for k in
+                             ("s1_load", "s2_exploration", "s3_dead_weight", "s4_instruction_distance"))
+    dead = obs.get("dead_weight_percent", 0)
+    dead = dead if isinstance(dead, (int, float)) and not isinstance(dead, bool) else 0
+    if coverage.get("context_tokens") == "unavailable":
+        metric_html = (f'<span>events <b>{obs.get("tool_events", 0)} tools / '
+                       f'{obs.get("turns_completed", 0)} turns</b></span>'
+                       '<span>context and S1–S4 <b>unavailable</b></span>')
+    else:
+        metric_html = (f'<span>context <b>{total/1000:.1f}K / {window/1000:.0f}K</b></span>'
+                       f'<span>dead <b>{dead}%</b></span>'
+                       f'<span>S1/S2/S3/S4 <b>{signal_values}</b></span>')
+    return f'''<article class="session" style="border-left-color:{color}">
+<div class="session-head"><div><h3>{project}</h3><span class="muted">{host} · {model} · session {sid}</span></div>
+<span class="zone" style="color:{color}">{zone} · R{score}</span></div>
+<div class="phase">{html.escape(phase_label)}{end_note} · updated {relative_age(age_seconds)}</div>
+<div class="gauge"><i style="width:{pct}%;background:{color}"></i></div>
+<div class="metrics">{metric_html}</div>
+<div class="link">{link}</div></article>'''
+
+
+def render_overview(active, ended, now=None):
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    inactive = [s for s in active if (s.get("identity") or {}).get("host") == "codex"
+                and (now - parse_timestamp((s.get("lifecycle") or {}).get("last_event_at"))).total_seconds()
+                > CODEX_INACTIVE_SECONDS]
+    inactive_ids = {s.get("_directory") for s in inactive}
+    current = [s for s in active if s.get("_directory") not in inactive_ids]
+    attention = [s for s in current if (s.get("lifecycle") or {}).get("phase") == "needs_attention"
+                 or (s.get("health") or {}).get("zone") == "RED"]
+    attention_ids = {s.get("_directory") for s in attention}
+    ordinary = [s for s in current if s.get("_directory") not in attention_ids]
+    severity = {"RED": 0, "AMBER": 1, "GREEN": 2, "UNAVAILABLE": 3}
+    skey = lambda s: (severity.get((s.get("health") or {}).get("zone", "UNAVAILABLE"), 3),
+                      -parse_timestamp((s.get("lifecycle") or {}).get("last_event_at")).timestamp())
+    attention.sort(key=skey)
+    ordinary.sort(key=skey)
+    inactive.sort(key=lambda s: parse_timestamp((s.get("lifecycle") or {}).get("last_event_at")), reverse=True)
+    inactive = [s for s in inactive
+                if (now - parse_timestamp((s.get("lifecycle") or {}).get("last_event_at"))).total_seconds()
+                <= RECENT_ENDED_SECONDS][:RECENT_ENDED_LIMIT]
+    red = sum((s.get("health") or {}).get("zone") == "RED" for s in current)
+
+    def section(title, items, empty):
+        cards = "".join(overview_card(s, now) for s in items) or f'<div class="empty">{empty}</div>'
+        return f"<section><h2>{title} <span>{len(items)}</span></h2>{cards}</section>"
+
+    stamp = now.astimezone().strftime("%H:%M:%S")
+    body = (section("Needs attention", attention, "No sessions need attention.")
+            + section("Active sessions", ordinary, "No other active sessions.")
+            + section("Inactive (estimated)", inactive, "No inactive Codex sessions.")
+            + section("Ended in the last 24 hours", ended, "No recently ended sessions."))
+    return f'''<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="2"><title>Context Lens · all sessions</title><style>
+:root{{--surface:#fcfcfb;--plane:#f9f9f7;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--good:#0ca30c;--warning:#d88900;--critical:#d03b3b;--link:#2a78d6}}
+@media(prefers-color-scheme:dark){{:root{{--surface:#1a1a19;--plane:#0d0d0d;--ink:#fff;--ink2:#c3c2b7;--grid:#2c2c2a;--link:#3987e5}}}}
+*{{box-sizing:border-box}}body{{font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--plane);color:var(--ink);max-width:1040px;margin:auto;padding:24px}}
+h1{{font-size:20px;margin:0}}h2{{font-size:14px;text-transform:uppercase;letter-spacing:.06em;margin:24px 0 10px}}h2 span{{color:var(--muted)}}h3{{margin:0;font-size:16px}}
+.header,.counts,.session,.empty{{background:var(--surface);border:1px solid var(--grid);border-radius:8px}}.header{{padding:18px 20px}}.muted,.phase{{color:var(--muted);font-size:12px}}
+.counts{{display:grid;grid-template-columns:repeat(4,1fr);margin-top:12px}}.count{{padding:12px 16px;border-right:1px solid var(--grid)}}.count:last-child{{border:0}}.count b{{display:block;font-size:24px}}
+.session{{padding:14px 16px;margin:8px 0;border-left:4px solid}}.session-head,.metrics{{display:flex;justify-content:space-between;gap:16px;align-items:center}}.zone{{font-weight:700}}.phase{{margin-top:6px}}
+.gauge{{height:7px;background:var(--grid);border-radius:5px;overflow:hidden;margin:10px 0}}.gauge i{{display:block;height:100%}}.metrics{{justify-content:flex-start;flex-wrap:wrap;color:var(--ink2);font-size:12px}}.metrics span{{margin-right:18px}}.link{{text-align:right;margin-top:5px}}a{{color:var(--link)}}.empty{{padding:18px;color:var(--muted)}}
+@media(max-width:620px){{.counts{{grid-template-columns:repeat(2,1fr)}}.count:nth-child(2){{border-right:0}}.session-head{{align-items:flex-start}}}}
+</style></head><body><div class="header"><h1>Context Lens · all sessions</h1>
+<div class="muted">Local, read-only health metadata · event-driven live view · refreshed {stamp}</div></div>
+<div class="counts"><div class="count"><b>{len(current)}</b>active</div><div class="count"><b>{len(attention)}</b>need attention</div><div class="count"><b>{red}</b>RED</div><div class="count"><b>{len(ended)}</b>recently ended</div></div>{body}
+<p class="muted">No prompts, source code, tool output, transcript paths, or full working-directory paths are displayed.</p></body></html>'''
+
+
+def write_overview():
+    """Serialize aggregate rendering across concurrent Claude sessions."""
+    CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+    lock = CACHE_ROOT / ".overview.lock"
+    deadline = time.monotonic() + 0.15
+    acquired = False
+    while time.monotonic() < deadline:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            acquired = True
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > 5:
+                    lock.unlink()
+                    continue
+            except FileNotFoundError:
+                continue
+            time.sleep(0.01)
+    out = CACHE_ROOT / "all-sessions.html"
+    if not acquired:
+        return out
+    try:
+        active, ended = read_summaries()
+        atomic_write(out, render_overview(active, ended))
+        return out
+    finally:
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def find_report(path=None):
@@ -500,6 +1062,26 @@ def open_browser(html):
         return False
 
 
+def open_all():
+    overview = write_overview()
+    open_browser(overview)
+    return overview
+
+
+def open_current():
+    sid = os.environ.get("CODEX_THREAD_ID")
+    if not sid:
+        sys.exit("context-lens: CODEX_THREAD_ID is unavailable; use --open-all")
+    report = session_dir(sid) / "report.html"
+    if not report.exists():
+        summary = load_summary(sid)
+        if not summary:
+            sys.exit("context-lens: current Codex session has not emitted a Context Lens hook yet")
+        atomic_write(report, render_codex_report(summary))
+    open_browser(report)
+    return report
+
+
 def main(argv):
     path = None
     if "--transcript" in argv:
@@ -517,12 +1099,26 @@ def main(argv):
         html = find_report(path)
         open_browser(html)
         print(html.as_uri())
+    elif "--open-all" in argv:
+        print(open_all().as_uri())
+    elif "--open-current" in argv:
+        print(open_current().as_uri())
     elif "--prompt-note" in argv:
         out = prompt_note(json.load(sys.stdin))
         if out:
             print(json.dumps(out))
+    elif "--session-start" in argv:
+        session_start(json.load(sys.stdin))
+    elif "--session-end" in argv:
+        session_end(json.load(sys.stdin))
+    elif "--notification" in argv:
+        notification(json.load(sys.stdin))
+    elif "--permission-request" in argv:
+        permission_request(json.load(sys.stdin))
     elif "--precompact" in argv:
         precompact(json.load(sys.stdin))
+    elif "--postcompact" in argv:
+        postcompact(json.load(sys.stdin))
     elif "--line" in argv:
         print(line(json.load(sys.stdin)))
     elif "--html" in argv:
@@ -532,8 +1128,9 @@ def main(argv):
         out.write_text(render_html(d, [d["r"]], path))
         print(out)
     else:
-        sys.exit("usage: analyzer.py --report|--update|--refresh|--line|--open|"
-                 "--html OUT [--transcript PATH]")
+        sys.exit("usage: analyzer.py --report|--update|--refresh|--line|--open|--open-all|"
+                 "--open-current|--session-start|--session-end|--notification|"
+                 "--permission-request|--precompact|--postcompact|--html OUT [--transcript PATH]")
 
 
 if __name__ == "__main__":

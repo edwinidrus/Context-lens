@@ -3,6 +3,56 @@
 All notable changes to Context-Lens. Versioning is [SemVer](https://semver.org);
 `plugin.json` carries an explicit `version` so users get updates only on a bump.
 
+## [Unreleased]
+
+### Added
+- Long-term vendor-neutral product vision and phased roadmap for Claude Code, Codex, OpenCode,
+  recovery workflows, and an adapter ecosystem.
+- Contributor guidance and repository instructions for consistent future development.
+- Reproducible LOCA-bench context-length versus task-accuracy diagram, its published source data,
+  and a dependency-free SVG renderer.
+
+### Changed
+- README now clearly separates the working Claude Code release from planned platform support and
+  documents installation, scoring, privacy, development, and project direction.
+
+## [1.3.0] — 2026-07-12
+
+Codex sessions can now join the same local command center with capability-aware fidelity.
+
+### Added
+- **Installable Codex plugin** — `.codex-plugin/plugin.json`, Codex-compatible lifecycle hooks,
+  and a dependency-free local marketplace builder.
+- **Codex lifecycle adapter** — tracks ready, running, waiting, permission-attention, compaction,
+  turn, and tool-event state without reading prompts or tool content.
+- **Combined host-neutral cache** — new summaries live under `~/.context-lens/`; existing Claude
+  cache state remains readable as a compatibility fallback.
+
+### Notes
+- Codex hooks do not currently expose stable context-token or S1-S4 inputs, so its cards label
+  those fields unavailable. The adapter does not parse the documented-unstable transcript format.
+- Codex does not currently expose `SessionEnd`; inactivity after 30 minutes is visibly labeled as
+  an estimate rather than treated as an observed end event.
+- Plugin hooks require explicit review and trust through Codex `/hooks` before they run.
+
+## [1.2.0] — 2026-07-12
+
+One local view can now follow every Context Lens-enabled Claude Code session.
+
+### Added
+- **`/context-lens-monitor` command center** — opens a dependency-free, self-refreshing overview
+  of active, attention-needed, RED, and recently ended sessions on the current machine.
+- **Lifecycle tracking** — `SessionStart`, `SessionEnd`, and `Notification` hooks record ready,
+  running, waiting, compacting, needs-attention, and ended phases without reading transcript text.
+- **Versioned privacy-minimized summaries** — each session writes raw health observations and
+  derived signals in separate fields for the aggregate dashboard.
+
+### Notes
+- Monitoring is local, read-only, and limited to Claude Code. It sends no telemetry and displays
+  no prompts, source code, tool output, transcript paths, or full working-directory paths.
+- Reload plugins or start a new session to arm the additional lifecycle hooks. Sessions already
+  running appear after their next Context Lens hook event.
+
 ## [1.1.0] — 2026-07-05
 
 Dashboard reaches the browser and tracks the session more closely.

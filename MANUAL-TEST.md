@@ -6,14 +6,17 @@ Two lanes. **Offline** is fast and deterministic (no session restart) — proves
 Run everything from the plugin dir:
 
 ```bash
-cd ~/hobbys/claude_code_plugin/architect/context-lens
+cd /path/to/Context-lens
 ```
 
 Set your real transcript once (used by several checks):
 
 ```bash
-T=~/.claude/projects/-home-edwinidrus-hobbys-claude-code-plugin-architect/63630a11-a7f0-454a-a976-9a44dd06df8c.jsonl
+find ~/.claude/projects -name '*.jsonl' -printf '%T@ %p\n' | sort -nr | head
+T=/path/to/your/session.jsonl
 ```
+
+Never commit a real transcript; it can contain prompts, source code, tool output, and local paths.
 
 ---
 
@@ -62,6 +65,17 @@ echo '{"context_window":{"used_percentage":44},"model":{"display_name":"Opus 4.8
 
 Expect: `[Opus 4.8] ⚪ ████░░░░░░ 44%` (⚪/no zone until a Stop hook has cached state).
 
+To enable it in Claude Code, add an absolute path to your user or project settings:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "/absolute/path/to/Context-lens/scripts/statusline.sh"
+  }
+}
+```
+
 **Open in the browser:** `--open` launches the live dashboard (WSL → Windows browser) and
 prints the URL:
 
@@ -84,6 +98,47 @@ echo "r_history before=$before after=$after   (must be equal — refresh never a
 **Live:** after the statusLine settings line (README), the gauge shows in the status bar. In
 a turn that makes several tool calls, watch the donut / dead-weight move *within* the turn.
 The token gauge itself steps at turn end (usage lands in the transcript only then).
+
+### All-session monitor
+
+After `/reload-plugins`, start two Claude Code sessions in different project directories and run:
+
+```text
+/context-lens-monitor
+```
+
+The browser should open `~/.context-lens/all-sessions.html`. Confirm both sessions appear
+with only project basename, shortened session ID, model, phase, health signals, score, and zone.
+Send a prompt in one session and verify its card moves to `running`, then to `waiting` when the turn
+ends. Trigger a permission notification if convenient and verify the card moves to **Needs
+attention**. Exit one session and verify it appears under **Ended in the last 24 hours**; resume it
+and verify it becomes active again.
+
+Privacy check: inspect the generated `summary.json` files and `all-sessions.html`. They must not
+contain prompt text, source excerpts, tool output, transcript paths, or full working-directory
+paths. A running phase with no event for five minutes may show `update stale (estimate)`; this is
+freshness labeling, not a claim that the Claude session ended.
+
+### Codex adapter
+
+Build and install a disposable local marketplace, then start a new Codex thread:
+
+```bash
+OUT=/tmp/context-lens-marketplace-$RANDOM
+python3 scripts/build_codex_marketplace.py "$OUT"
+codex plugin marketplace add "$OUT"
+codex plugin add context-lens@context-lens-local
+```
+
+In the new thread, use `/hooks` to review and trust Context Lens. Run `/context-lens`, submit a
+prompt that uses a tool, and verify the session page progresses through `running` and `waiting`
+while its tool/turn counters increase. Run `/context-lens-monitor` and confirm the Codex card shows
+the project basename, `codex`, model, lifecycle phase, and `context and S1–S4 unavailable`.
+
+Inspect `~/.context-lens/<session-id>/summary.json` and confirm it contains no prompt, tool input,
+tool response, transcript path, or full working-directory path. Permission prompts should move the
+card to **Needs attention**. Since Codex has no documented `SessionEnd` event, the manual inactivity
+check is time-based and explicitly labeled as an estimate.
 
 ---
 
@@ -179,6 +234,15 @@ claude plugin uninstall context-lens@context-lens           # clean up if you us
 claude plugin marketplace remove context-lens
 ```
 
+Validate and package the Codex plugin separately:
+
+```bash
+python3 -m json.tool .codex-plugin/plugin.json >/dev/null
+python3 scripts/build_codex_marketplace.py /tmp/context-lens-marketplace-validation
+codex plugin marketplace add /tmp/context-lens-marketplace-validation
+codex plugin add context-lens@context-lens-local
+```
+
 > Don't run the dev symlink **and** a marketplace install at once — hooks fire twice
 > (doubled dashboard writes + warnings). Pick one (README "Install").
 
@@ -190,7 +254,7 @@ claude plugin marketplace remove context-lens
 |-------|----------------|
 | Offline suite | `test_analyzer: ALL PASS` |
 | M1 | report shows score, zone, S1–S4 numeric, dead-weight list |
-| M2 | dashboard renders all widgets; `--line` prints a gauge |
+| M2 | current dashboard renders; monitor follows two sessions; `--line` prints a gauge |
 | M3 | systemMessage + ~90-token note; 2nd `prompt_note` is `None` |
 | M4 | `⚠ compaction: … (−…K)` + FM4 caution |
-| M5 | `validate` passes; `marketplace add` + `install` succeed |
+| M5 | Claude and Codex validation passes; both marketplace installs succeed |

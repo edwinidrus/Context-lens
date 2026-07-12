@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}\"/scripts/analyzer.py --session-start"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}\"/scripts/analyzer.py --prompt-note"}]}],
+    "PermissionRequest": [{"hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}\"/scripts/analyzer.py --permission-request"}]}],
+    "PostToolUse": [{"hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}\"/scripts/analyzer.py --refresh"}]}],
+    "PreCompact": [{"hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}\"/scripts/analyzer.py --precompact"}]}],
+    "PostCompact": [{"hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}\"/scripts/analyzer.py --postcompact"}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}\"/scripts/analyzer.py --update"}]}]
+  }
+}

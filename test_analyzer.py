@@ -3,10 +3,12 @@
 import json
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 import analyzer
+import build_codex_marketplace
 
 
 def entry(etype, content, model=None, usage=None, sidechain=False):
@@ -75,10 +77,43 @@ def main():
 
     # exact total from latest MAIN-chain assistant usage (sidechain 999999 excluded)
     assert d["total"] == 96_000, d["total"]
-    # latest model wins, mapped to friendly name; unmapped falls back to raw id
+    # Latest model wins. Display labels are derived from arbitrary IDs, not a catalogue.
     assert d["model"] == "claude-opus-4-8"
-    assert analyzer.friendly_model("claude-opus-4-8") == "Opus 4.8"
-    assert analyzer.friendly_model("claude-new-9") == "claude-new-9"
+    assert analyzer.friendly_model("claude-opus-4-8") == "Claude Opus 4.8"
+    assert analyzer.friendly_model("gpt-5-2-codex") == "GPT 5.2 Codex"
+    assert analyzer.friendly_model("google/gemini-2-5-pro") == "Google Gemini 2.5 Pro"
+    assert analyzer.friendly_model("meta-llama/Llama-3-3-70b-instruct") == \
+        "Meta Llama Llama 3.3 70B Instruct"
+    assert analyzer.friendly_model(None) == "unknown"
+
+    # Context capacity is metadata/config driven, so new proprietary and open-weight
+    # model IDs work without adding entries to analyzer.py.
+    assert analyzer.detect_context_window({"context_window_tokens": 1_000_000}) == \
+        (1_000_000, "runtime metadata", True)
+    assert analyzer.detect_context_window({"model": {"capabilities": {
+        "contextWindow": {"maxTokens": 128_000}}}}) == (128_000, "runtime metadata", True)
+    assert analyzer.detect_context_window({"config": {"n_ctx": 32_768}}) == \
+        (32_768, "runtime metadata", True)
+    assert analyzer.detect_context_window({}) == \
+        (analyzer.DEFAULT_CONTEXT_WINDOW, "default estimate", False)
+
+    with tempfile.TemporaryDirectory() as td:
+        generic = Path(td) / "generic.jsonl"
+        generic.write_text("\n".join(json.dumps(row) for row in [
+            entry("user", "hello"),
+            {"type": "assistant", "message": {
+                "model": {"id": "acme/weights-72b-instruct"},
+                "context_window_tokens": 131_072,
+                "usage": {"input_tokens": 65_536},
+                "content": [{"type": "text", "text": "ok"}]}}
+        ]))
+        generic_analysis = analyzer.analyze(generic)
+        assert generic_analysis["model"] == "acme/weights-72b-instruct"
+        assert generic_analysis["context_window"] == 131_072
+        assert generic_analysis["context_window_exact"] is True
+        generic_html = analyzer.render_html(generic_analysis, [0], generic)
+        assert '<div class="hero">50%</div>' in generic_html
+        assert "131.072K tokens" in generic_html and "capacity estimated" not in generic_html
     # composition: all four categories populated, fractions sum to 1
     comp = d["comp"]
     assert all(comp[k] > 0 for k in comp), comp
@@ -101,13 +136,14 @@ def main():
     assert analyzer.zone(69) == "AMBER" and analyzer.zone(70) == "RED"
     # report renders and mentions the zone
     rep = analyzer.render_report(d, "t.jsonl")
-    assert "Rot score" in rep and d["zone"] in rep and "Opus 4.8" in rep
+    assert "Rot score" in rep and d["zone"] in rep and "Claude Opus 4.8" in rep
 
     # --- M2: dashboard + state + statusline ---
     html = analyzer.render_html(d, [10, 20, d["r"]], "t.jsonl")
     assert '<meta http-equiv="refresh" content="2">' in html
     assert "http://" not in html and "https://" not in html  # fully self-contained
-    assert "Opus 4.8" in html and "claude-opus-4-8" in html  # friendly + raw id
+    assert "Claude Opus 4.8" in html and "claude-opus-4-8" in html  # friendly + raw id
+    assert "capacity estimated" in html
     assert "prefers-color-scheme" in html and "polyline" in html
     segs = [float(m) for m in __import__("re").findall(r'stroke-dasharray="([\d.]+)', html)]
     assert abs(sum(segs) - (100 - 4)) < 1.0, segs  # 4 donut arcs, 1-unit gap each
@@ -128,6 +164,12 @@ def main():
         ln = analyzer.line({"context_window": {"used_percentage": 44},
                             "model": {"display_name": "Opus 4.8"}, "session_id": "s1"})
         assert "Opus 4.8" in ln and "44%" in ln and f"R{d['r']}" in ln
+        analyzer.line({"context_window": {"used_percentage": 10, "context_window_size": 1_000_000},
+                       "model": {"display_name": "Future model"}, "session_id": "s1"})
+        assert analyzer.load_state("s1")["context_window"] == 1_000_000
+        inherited = analyzer.analyze(p)
+        analyzer.apply_session_window(inherited, analyzer.load_state("s1"))
+        assert inherited["context_window"] == 1_000_000 and inherited["context_window_exact"]
         ln0 = analyzer.line({"context_window": {"used_percentage": None},
                              "model": {}, "session_id": "nope"})
         assert "0%" in ln0  # no crash on nulls / missing state
@@ -211,6 +253,157 @@ def main():
         html = analyzer.find_report(str(p2))
         assert html.exists() and "refresh" in html.read_text()
         assert html.parent.name == "fresh"                   # keyed by session (transcript stem)
+
+    # --- live multi-session command center ---
+    with tempfile.TemporaryDirectory() as td:
+        analyzer.CACHE_ROOT = Path(td) / "cache"
+        p = Path(td) / "private-transcript.jsonl"; fixture(p)
+        hook = {"transcript_path": str(p), "session_id": "monitor-one",
+                "cwd": "/home/alice/secret/acme-app", "model": "claude-opus-4-8"}
+
+        analyzer.session_start({**hook, "hook_event_name": "SessionStart"})
+        sm = analyzer.load_summary("monitor-one")
+        assert sm["schema"] == analyzer.SUMMARY_SCHEMA
+        assert sm["identity"]["project"] == "acme-app"
+        assert sm["lifecycle"]["status"] == "active" and sm["lifecycle"]["phase"] == "ready"
+
+        analyzer.update({**hook, "hook_event_name": "Stop"})
+        sm = analyzer.load_summary("monitor-one")
+        assert sm["lifecycle"]["phase"] == "waiting"
+        assert set(sm["observations"]) >= {"context_tokens", "dead_weight_percent"}
+        assert set(sm["signals"]) >= {"s1_load", "s2_exploration", "s3_dead_weight",
+                                       "s4_instruction_distance"}
+        serialized = json.dumps(sm)
+        assert "/home/alice/secret" not in serialized
+        assert str(p) not in serialized and "please read the file" not in serialized
+
+        analyzer.notification({**hook, "hook_event_name": "Notification",
+                               "notification_type": "permission_prompt"})
+        assert analyzer.load_summary("monitor-one")["lifecycle"]["phase"] == "needs_attention"
+        analyzer.session_end({**hook, "hook_event_name": "SessionEnd", "reason": "prompt_input_exit"})
+        ended = analyzer.load_summary("monitor-one")
+        assert ended["lifecycle"]["status"] == "ended"
+        assert ended["lifecycle"]["end_reason"] == "prompt_input_exit"
+        analyzer.session_start({**hook, "hook_event_name": "SessionStart", "source": "resume"})
+        resumed = analyzer.load_summary("monitor-one")
+        assert resumed["lifecycle"]["status"] == "active"
+        assert resumed["lifecycle"]["ended_at"] is None      # resume reactivates same id
+
+        # Stale running is a display-only estimate, not an inferred SessionEnd.
+        old = (analyzer.datetime.datetime.now(analyzer.datetime.timezone.utc)
+               - analyzer.datetime.timedelta(minutes=10)).isoformat()
+        resumed["lifecycle"].update({"phase": "running", "last_event_at": old})
+        analyzer.atomic_write(analyzer.session_dir("monitor-one") / "summary.json",
+                              json.dumps(resumed))
+
+        # Retain only the newest 20 ended sessions from the last 24 hours; malformed and
+        # older summaries are ignored without blocking the monitor.
+        now = analyzer.datetime.datetime.now(analyzer.datetime.timezone.utc)
+        for i in range(22):
+            item = json.loads(json.dumps(ended))
+            item["identity"]["session_id"] = f"ended-{i}"
+            item["identity"]["project"] = f"project-{i}"
+            item["lifecycle"]["last_event_at"] = (now - analyzer.datetime.timedelta(minutes=i)).isoformat()
+            item["lifecycle"]["ended_at"] = item["lifecycle"]["last_event_at"]
+            analyzer.atomic_write(analyzer.session_dir(f"ended-{i}") / "summary.json", json.dumps(item))
+        too_old = json.loads(json.dumps(ended))
+        too_old["identity"]["session_id"] = "ended-old"
+        too_old["lifecycle"]["ended_at"] = (now - analyzer.datetime.timedelta(hours=25)).isoformat()
+        too_old["lifecycle"]["last_event_at"] = too_old["lifecycle"]["ended_at"]
+        analyzer.atomic_write(analyzer.session_dir("ended-old") / "summary.json", json.dumps(too_old))
+        (analyzer.session_dir("broken") / "summary.json").write_text("{not json")
+        analyzer.atomic_write(analyzer.session_dir("wrong-shape") / "summary.json",
+                              json.dumps({"schema": analyzer.SUMMARY_SCHEMA, "lifecycle": []}))
+
+        active, recent = analyzer.read_summaries(now)
+        assert len(active) == 1 and len(recent) == analyzer.RECENT_ENDED_LIMIT
+        overview = analyzer.render_overview(active, recent, now)
+        assert "Context Lens · all sessions" in overview and "update stale (estimate)" in overview
+        assert "acme-app" in overview and "ended-old" not in overview
+        assert "/home/alice/secret" not in overview and str(p) not in overview
+        out = analyzer.write_overview()
+        assert out.exists() and '<meta http-equiv="refresh" content="2">' in out.read_text()
+
+    # Concurrent hook writers leave complete summaries and one complete aggregate page.
+    with tempfile.TemporaryDirectory() as td:
+        analyzer.CACHE_ROOT = Path(td) / "cache"
+        threads = []
+        for i in range(6):
+            h = {"session_id": f"parallel-{i}", "cwd": f"/workspace/project-{i}",
+                 "model": "claude-opus-4-8", "hook_event_name": "SessionStart"}
+            threads.append(threading.Thread(target=analyzer.session_start, args=(h,)))
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        active, ended = analyzer.read_summaries()
+        assert len(active) == 6 and not ended
+        aggregate = analyzer.write_overview().read_text()
+        assert all(f"project-{i}" in aggregate for i in range(6))
+        assert aggregate.endswith("</html>")
+
+    hooks = json.loads((Path(__file__).parent / "hooks" / "hooks.json").read_text())["hooks"]
+    assert {"SessionStart", "SessionEnd", "Notification", "PermissionRequest", "PostCompact"} <= set(hooks)
+    assert "--session-start" in hooks["SessionStart"][0]["hooks"][0]["command"]
+    assert "--session-end" in hooks["SessionEnd"][0]["hooks"][0]["command"]
+    assert "--notification" in hooks["Notification"][0]["hooks"][0]["command"]
+
+    # --- Codex adapter: stable hook metadata only, no unstable transcript parsing ---
+    with tempfile.TemporaryDirectory() as td:
+        analyzer.CACHE_ROOT = Path(td) / "cache"
+        ch = {"_context_lens_host": "codex", "session_id": "codex-one",
+              "transcript_path": "/home/alice/.codex/private-rollout.jsonl",
+              "cwd": "/home/alice/secret/codex-project", "model": "gpt-5.4",
+              "turn_id": "turn-1"}
+        analyzer.session_start({**ch, "hook_event_name": "SessionStart", "source": "startup"})
+        analyzer.prompt_note({**ch, "hook_event_name": "UserPromptSubmit",
+                              "prompt": "private customer credential"})
+        analyzer.refresh({**ch, "hook_event_name": "PostToolUse", "tool_name": "Bash",
+                          "tool_input": {"command": "cat private.txt"},
+                          "tool_response": "private source output"})
+        analyzer.permission_request({**ch, "hook_event_name": "PermissionRequest"})
+        assert analyzer.load_summary("codex-one")["lifecycle"]["phase"] == "needs_attention"
+        analyzer.precompact({**ch, "hook_event_name": "PreCompact", "trigger": "auto"})
+        analyzer.postcompact({**ch, "hook_event_name": "PostCompact", "trigger": "auto"})
+        analyzer.update({**ch, "hook_event_name": "Stop", "last_assistant_message": "private"})
+
+        codex = analyzer.load_summary("codex-one")
+        assert codex["identity"]["host"] == "codex" and codex["identity"]["model"] == "gpt-5.4"
+        assert codex["lifecycle"]["phase"] == "waiting"
+        assert codex["observations"]["tool_events"] == 1
+        assert codex["observations"]["turns_completed"] == 1
+        assert codex["observations"]["compactions_observed"] == 1
+        assert not codex["signals"] and not codex["health"]
+        assert codex["coverage"]["context_tokens"] == "unavailable"
+        serialized = json.dumps(codex)
+        assert "private customer credential" not in serialized
+        assert "private source output" not in serialized and "private-rollout" not in serialized
+        report = (analyzer.session_dir("codex-one") / "report.html").read_text()
+        assert "Health score unavailable" in report and "GPT 5.4" in report
+        assert "private" not in report and "/home/alice/secret" not in report
+
+        old = (analyzer.datetime.datetime.now(analyzer.datetime.timezone.utc)
+               - analyzer.datetime.timedelta(minutes=31)).isoformat()
+        codex["lifecycle"]["last_event_at"] = old
+        analyzer.atomic_write(analyzer.session_dir("codex-one") / "summary.json", json.dumps(codex))
+        active, ended = analyzer.read_summaries()
+        overview = analyzer.render_overview(active, ended)
+        assert "Inactive (estimated)" in overview and "codex · GPT 5.4" in overview
+        assert "context and S1–S4 <b>unavailable" in overview
+
+    codex_manifest = json.loads((Path(__file__).parent / ".codex-plugin" / "plugin.json").read_text())
+    assert codex_manifest["name"] == "context-lens" and codex_manifest["version"] == "1.3.0"
+
+    with tempfile.TemporaryDirectory() as td:
+        market_file = build_codex_marketplace.build(Path(td) / "marketplace")
+        market = json.loads(market_file.read_text())
+        assert market["name"] == "context-lens-local"
+        packaged = market_file.parents[2] / "plugins" / "context-lens"
+        assert (packaged / ".codex-plugin" / "plugin.json").exists()
+        packaged_hooks = json.loads((packaged / "hooks" / "hooks.json").read_text())["hooks"]
+        assert {"SessionStart", "UserPromptSubmit", "PermissionRequest", "PostToolUse",
+                "PreCompact", "PostCompact", "Stop"} == set(packaged_hooks)
+        assert "SessionEnd" not in packaged_hooks and "Notification" not in packaged_hooks
 
     print("test_analyzer: ALL PASS")
 

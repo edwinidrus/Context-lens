@@ -1,0 +1,8 @@
+model,group,8K,16K,32K,64K,96K,128K,256K,average
+Claude-4.5-Opus,Proprietary,96.0,84.0,84.0,65.3,45.3,34.0,14.7,68.1
+GPT-5.2-Medium,Proprietary,72.0,70.7,60.0,52.0,44.0,38.7,21.3,51.2
+Gemini-3-Flash,Proprietary,64.0,57.3,40.0,36.0,32.0,21.3,17.3,38.3
+DeepSeek-V3.2-Thinking,Open source,78.7,80.0,61.3,45.3,16.0,10.7,6.7,42.7
+MiniMax-M2.1,Open source,69.3,62.7,42.7,28.0,22.7,20.0,5.3,35.8
+GLM-4.7,Open source,76.0,69.3,42.7,28.0,14.7,10.7,5.3,35.2
+Kimi-K2-Thinking,Open source,74.7,56.0,38.7,25.3,13.3,8.0,2.7,31.2

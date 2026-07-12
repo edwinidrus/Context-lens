@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="850" viewBox="0 0 1200 850" role="img" aria-labelledby="title description">
+<title id="title">LOCA-bench task accuracy falls as context workload grows</title>
+<desc id="description">Line chart of the seven models published in LOCA-bench Table 1, from 8K to 256K environment description tokens. Every model has lower task success accuracy at 256K than at 8K. A coverage note says that no author-published, like-for-like curves for newer model releases were verified as of 12 July 2026.</desc>
+<style>
+        .title { font: 700 27px system-ui, -apple-system, sans-serif; fill: #111827; }
+        .subtitle { font: 15px system-ui, -apple-system, sans-serif; fill: #4B5563; }
+        .axis-title { font: 600 15px system-ui, -apple-system, sans-serif; fill: #374151; }
+        .label { font: 13px system-ui, -apple-system, sans-serif; fill: #4B5563; }
+        .legend { font: 13px system-ui, -apple-system, sans-serif; fill: #1F2937; }
+        .source { font: 12px system-ui, -apple-system, sans-serif; fill: #6B7280; }
+        .coverage { font: 600 13px system-ui, -apple-system, sans-serif; fill: #7C2D12; }
+        .grid { stroke: #E5E7EB; stroke-width: 1; }
+        .axis { stroke: #9CA3AF; stroke-width: 1.2; }
+        .series { fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+        .point { stroke: #FFFFFF; stroke-width: 1.5; }
+        </style>
+<rect width="1200" height="850" rx="18" fill="#FFFFFF"/>
+<text x="100.0" y="42.0" class="title" text-anchor="start" >Agentic task success drops as context workload grows</text>
+<text x="100.0" y="70.0" class="subtitle" text-anchor="start" >Published model set (February 2026) · ReAct scaffold · execution-verified mean accuracy</text>
+<line x1="100" y1="580.0" x2="1156" y2="580.0" class="grid"/>
+<text x="86.0" y="585.0" class="label" text-anchor="end" >0</text>
+<line x1="100" y1="485.0" x2="1156" y2="485.0" class="grid"/>
+<text x="86.0" y="490.0" class="label" text-anchor="end" >20</text>
+<line x1="100" y1="390.0" x2="1156" y2="390.0" class="grid"/>
+<text x="86.0" y="395.0" class="label" text-anchor="end" >40</text>
+<line x1="100" y1="295.0" x2="1156" y2="295.0" class="grid"/>
+<text x="86.0" y="300.0" class="label" text-anchor="end" >60</text>
+<line x1="100" y1="200.0" x2="1156" y2="200.0" class="grid"/>
+<text x="86.0" y="205.0" class="label" text-anchor="end" >80</text>
+<line x1="100" y1="105.0" x2="1156" y2="105.0" class="grid"/>
+<text x="86.0" y="110.0" class="label" text-anchor="end" >100</text>
+<line x1="100" y1="105" x2="100" y2="580" class="axis"/>
+<line x1="100" y1="580" x2="1156" y2="580" class="axis"/>
+<line x1="100.0" y1="580" x2="100.0" y2="587" class="axis"/>
+<text x="100.0" y="607.0" class="label" text-anchor="middle" >8K</text>
+<line x1="311.2" y1="580" x2="311.2" y2="587" class="axis"/>
+<text x="311.2" y="607.0" class="label" text-anchor="middle" >16K</text>
+<line x1="522.4" y1="580" x2="522.4" y2="587" class="axis"/>
+<text x="522.4" y="607.0" class="label" text-anchor="middle" >32K</text>
+<line x1="733.6" y1="580" x2="733.6" y2="587" class="axis"/>
+<text x="733.6" y="607.0" class="label" text-anchor="middle" >64K</text>
+<line x1="857.1" y1="580" x2="857.1" y2="587" class="axis"/>
+<text x="857.1" y="607.0" class="label" text-anchor="middle" >96K</text>
+<line x1="944.8" y1="580" x2="944.8" y2="587" class="axis"/>
+<text x="944.8" y="607.0" class="label" text-anchor="middle" >128K</text>
+<line x1="1156.0" y1="580" x2="1156.0" y2="587" class="axis"/>
+<text x="1156.0" y="607.0" class="label" text-anchor="middle" >256K</text>
+<text x="25.0" y="342.5" class="axis-title" text-anchor="middle" transform="rotate(-90 25 342.5)">Task success accuracy (%)</text>
+<text x="628.0" y="638.0" class="axis-title" text-anchor="middle" >Environment description length (tokens, log₂ scale)</text>
+<polyline points="100.0,124.0 311.2,181.0 522.4,181.0 733.6,269.8 857.1,364.8 944.8,418.5 1156.0,510.2" class="series" stroke="#2563EB"/>
+<circle cx="100.0" cy="124.0" r="4.8" class="point" fill="#2563EB"><title>Claude-4.5-Opus: 96.0% at 8K</title></circle>
+<circle cx="311.2" cy="181.0" r="4.8" class="point" fill="#2563EB"><title>Claude-4.5-Opus: 84.0% at 16K</title></circle>
+<circle cx="522.4" cy="181.0" r="4.8" class="point" fill="#2563EB"><title>Claude-4.5-Opus: 84.0% at 32K</title></circle>
+<circle cx="733.6" cy="269.8" r="4.8" class="point" fill="#2563EB"><title>Claude-4.5-Opus: 65.3% at 64K</title></circle>
+<circle cx="857.1" cy="364.8" r="4.8" class="point" fill="#2563EB"><title>Claude-4.5-Opus: 45.3% at 96K</title></circle>
+<circle cx="944.8" cy="418.5" r="4.8" class="point" fill="#2563EB"><title>Claude-4.5-Opus: 34.0% at 128K</title></circle>
+<circle cx="1156.0" cy="510.2" r="4.8" class="point" fill="#2563EB"><title>Claude-4.5-Opus: 14.7% at 256K</title></circle>
+<polyline points="100.0,238.0 311.2,244.2 522.4,295.0 733.6,333.0 857.1,371.0 944.8,396.2 1156.0,478.8" class="series" stroke="#D97706"/>
+<circle cx="100.0" cy="238.0" r="4.8" class="point" fill="#D97706"><title>GPT-5.2-Medium: 72.0% at 8K</title></circle>
+<circle cx="311.2" cy="244.2" r="4.8" class="point" fill="#D97706"><title>GPT-5.2-Medium: 70.7% at 16K</title></circle>
+<circle cx="522.4" cy="295.0" r="4.8" class="point" fill="#D97706"><title>GPT-5.2-Medium: 60.0% at 32K</title></circle>
+<circle cx="733.6" cy="333.0" r="4.8" class="point" fill="#D97706"><title>GPT-5.2-Medium: 52.0% at 64K</title></circle>
+<circle cx="857.1" cy="371.0" r="4.8" class="point" fill="#D97706"><title>GPT-5.2-Medium: 44.0% at 96K</title></circle>
+<circle cx="944.8" cy="396.2" r="4.8" class="point" fill="#D97706"><title>GPT-5.2-Medium: 38.7% at 128K</title></circle>
+<circle cx="1156.0" cy="478.8" r="4.8" class="point" fill="#D97706"><title>GPT-5.2-Medium: 21.3% at 256K</title></circle>
+<polyline points="100.0,276.0 311.2,307.8 522.4,390.0 733.6,409.0 857.1,428.0 944.8,478.8 1156.0,497.8" class="series" stroke="#059669"/>
+<circle cx="100.0" cy="276.0" r="4.8" class="point" fill="#059669"><title>Gemini-3-Flash: 64.0% at 8K</title></circle>
+<circle cx="311.2" cy="307.8" r="4.8" class="point" fill="#059669"><title>Gemini-3-Flash: 57.3% at 16K</title></circle>
+<circle cx="522.4" cy="390.0" r="4.8" class="point" fill="#059669"><title>Gemini-3-Flash: 40.0% at 32K</title></circle>
+<circle cx="733.6" cy="409.0" r="4.8" class="point" fill="#059669"><title>Gemini-3-Flash: 36.0% at 64K</title></circle>
+<circle cx="857.1" cy="428.0" r="4.8" class="point" fill="#059669"><title>Gemini-3-Flash: 32.0% at 96K</title></circle>
+<circle cx="944.8" cy="478.8" r="4.8" class="point" fill="#059669"><title>Gemini-3-Flash: 21.3% at 128K</title></circle>
+<circle cx="1156.0" cy="497.8" r="4.8" class="point" fill="#059669"><title>Gemini-3-Flash: 17.3% at 256K</title></circle>
+<polyline points="100.0,206.2 311.2,200.0 522.4,288.8 733.6,364.8 857.1,504.0 944.8,529.2 1156.0,548.2" class="series" stroke="#DC2626" stroke-dasharray="8 6"/>
+<circle cx="100.0" cy="206.2" r="4.8" class="point" fill="#DC2626"><title>DeepSeek-V3.2-Thinking: 78.7% at 8K</title></circle>
+<circle cx="311.2" cy="200.0" r="4.8" class="point" fill="#DC2626"><title>DeepSeek-V3.2-Thinking: 80.0% at 16K</title></circle>
+<circle cx="522.4" cy="288.8" r="4.8" class="point" fill="#DC2626"><title>DeepSeek-V3.2-Thinking: 61.3% at 32K</title></circle>
+<circle cx="733.6" cy="364.8" r="4.8" class="point" fill="#DC2626"><title>DeepSeek-V3.2-Thinking: 45.3% at 64K</title></circle>
+<circle cx="857.1" cy="504.0" r="4.8" class="point" fill="#DC2626"><title>DeepSeek-V3.2-Thinking: 16.0% at 96K</title></circle>
+<circle cx="944.8" cy="529.2" r="4.8" class="point" fill="#DC2626"><title>DeepSeek-V3.2-Thinking: 10.7% at 128K</title></circle>
+<circle cx="1156.0" cy="548.2" r="4.8" class="point" fill="#DC2626"><title>DeepSeek-V3.2-Thinking: 6.7% at 256K</title></circle>
+<polyline points="100.0,250.8 311.2,282.2 522.4,377.2 733.6,447.0 857.1,472.2 944.8,485.0 1156.0,554.8" class="series" stroke="#7C3AED" stroke-dasharray="8 6"/>
+<circle cx="100.0" cy="250.8" r="4.8" class="point" fill="#7C3AED"><title>MiniMax-M2.1: 69.3% at 8K</title></circle>
+<circle cx="311.2" cy="282.2" r="4.8" class="point" fill="#7C3AED"><title>MiniMax-M2.1: 62.7% at 16K</title></circle>
+<circle cx="522.4" cy="377.2" r="4.8" class="point" fill="#7C3AED"><title>MiniMax-M2.1: 42.7% at 32K</title></circle>
+<circle cx="733.6" cy="447.0" r="4.8" class="point" fill="#7C3AED"><title>MiniMax-M2.1: 28.0% at 64K</title></circle>
+<circle cx="857.1" cy="472.2" r="4.8" class="point" fill="#7C3AED"><title>MiniMax-M2.1: 22.7% at 96K</title></circle>
+<circle cx="944.8" cy="485.0" r="4.8" class="point" fill="#7C3AED"><title>MiniMax-M2.1: 20.0% at 128K</title></circle>
+<circle cx="1156.0" cy="554.8" r="4.8" class="point" fill="#7C3AED"><title>MiniMax-M2.1: 5.3% at 256K</title></circle>
+<polyline points="100.0,219.0 311.2,250.8 522.4,377.2 733.6,447.0 857.1,510.2 944.8,529.2 1156.0,554.8" class="series" stroke="#0891B2" stroke-dasharray="8 6"/>
+<circle cx="100.0" cy="219.0" r="4.8" class="point" fill="#0891B2"><title>GLM-4.7: 76.0% at 8K</title></circle>
+<circle cx="311.2" cy="250.8" r="4.8" class="point" fill="#0891B2"><title>GLM-4.7: 69.3% at 16K</title></circle>
+<circle cx="522.4" cy="377.2" r="4.8" class="point" fill="#0891B2"><title>GLM-4.7: 42.7% at 32K</title></circle>
+<circle cx="733.6" cy="447.0" r="4.8" class="point" fill="#0891B2"><title>GLM-4.7: 28.0% at 64K</title></circle>
+<circle cx="857.1" cy="510.2" r="4.8" class="point" fill="#0891B2"><title>GLM-4.7: 14.7% at 96K</title></circle>
+<circle cx="944.8" cy="529.2" r="4.8" class="point" fill="#0891B2"><title>GLM-4.7: 10.7% at 128K</title></circle>
+<circle cx="1156.0" cy="554.8" r="4.8" class="point" fill="#0891B2"><title>GLM-4.7: 5.3% at 256K</title></circle>
+<polyline points="100.0,225.2 311.2,314.0 522.4,396.2 733.6,459.8 857.1,516.8 944.8,542.0 1156.0,567.2" class="series" stroke="#DB2777" stroke-dasharray="8 6"/>
+<circle cx="100.0" cy="225.2" r="4.8" class="point" fill="#DB2777"><title>Kimi-K2-Thinking: 74.7% at 8K</title></circle>
+<circle cx="311.2" cy="314.0" r="4.8" class="point" fill="#DB2777"><title>Kimi-K2-Thinking: 56.0% at 16K</title></circle>
+<circle cx="522.4" cy="396.2" r="4.8" class="point" fill="#DB2777"><title>Kimi-K2-Thinking: 38.7% at 32K</title></circle>
+<circle cx="733.6" cy="459.8" r="4.8" class="point" fill="#DB2777"><title>Kimi-K2-Thinking: 25.3% at 64K</title></circle>
+<circle cx="857.1" cy="516.8" r="4.8" class="point" fill="#DB2777"><title>Kimi-K2-Thinking: 13.3% at 96K</title></circle>
+<circle cx="944.8" cy="542.0" r="4.8" class="point" fill="#DB2777"><title>Kimi-K2-Thinking: 8.0% at 128K</title></circle>
+<circle cx="1156.0" cy="567.2" r="4.8" class="point" fill="#DB2777"><title>Kimi-K2-Thinking: 2.7% at 256K</title></circle>
+<text x="100.0" y="665.0" class="axis-title" text-anchor="start" >Proprietary</text>
+<text x="655.0" y="665.0" class="axis-title" text-anchor="start" >Open source · dashed</text>
+<line x1="100" y1="685" x2="130" y2="685" stroke="#2563EB" stroke-width="3"/>
+<text x="138.0" y="690.0" class="legend" text-anchor="start" >Claude-4.5-Opus</text>
+<line x1="278" y1="685" x2="308" y2="685" stroke="#D97706" stroke-width="3"/>
+<text x="316.0" y="690.0" class="legend" text-anchor="start" >GPT-5.2-Medium</text>
+<line x1="456" y1="685" x2="486" y2="685" stroke="#059669" stroke-width="3"/>
+<text x="494.0" y="690.0" class="legend" text-anchor="start" >Gemini-3-Flash</text>
+<line x1="655" y1="685" x2="685" y2="685" stroke="#DC2626" stroke-width="3" stroke-dasharray="8 6"/>
+<text x="693.0" y="690.0" class="legend" text-anchor="start" >DeepSeek-V3.2-Thinking</text>
+<line x1="905" y1="685" x2="935" y2="685" stroke="#7C3AED" stroke-width="3" stroke-dasharray="8 6"/>
+<text x="943.0" y="690.0" class="legend" text-anchor="start" >MiniMax-M2.1</text>
+<line x1="655" y1="713" x2="685" y2="713" stroke="#0891B2" stroke-width="3" stroke-dasharray="8 6"/>
+<text x="693.0" y="718.0" class="legend" text-anchor="start" >GLM-4.7</text>
+<line x1="905" y1="713" x2="935" y2="713" stroke="#DB2777" stroke-width="3" stroke-dasharray="8 6"/>
+<text x="943.0" y="718.0" class="legend" text-anchor="start" >Kimi-K2-Thinking</text>
+<rect x="100" y="755" width="1056" height="36" rx="7" fill="#FFF7ED" stroke="#FDBA74"/>
+<text x="114.0" y="778.0" class="coverage" text-anchor="start" >Coverage check · 12 Jul 2026: no author-published like-for-like curves for newer model releases were verified.</text>
+<text x="100.0" y="825.0" class="source" text-anchor="start" >Source: Zeng, Huang &amp; He (2026), LOCA-bench, Table 1 · Values unchanged; newer models are not estimated</text>
+</svg>
