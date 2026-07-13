@@ -7,11 +7,14 @@ updated automatically; rebuild or upgrade the marketplace and restart the host a
 
 ## Reporting a vulnerability
 
-Please use GitHub's **Security → Report a vulnerability** flow for issues that could expose local
-transcripts, prompts, source paths, credentials, or arbitrary command execution. Do not open a
-public issue containing private session data. If private reporting is unavailable, contact the
-maintainer through the project email in `.codex-plugin/plugin.json` with only a minimal description
-and arrange a safe channel before sharing reproduction data.
+Security contact: [@edwinidrus](https://github.com/edwinidrus).
+
+Please use Context Lens's
+[private vulnerability reporting form](https://github.com/edwinidrus/Context-lens/security/advisories/new)
+for issues that could expose local transcripts, prompts, source paths, credentials, or arbitrary
+command execution. Do not open a public issue containing private session data. If private reporting
+is unavailable, contact the maintainer through the project email in `.codex-plugin/plugin.json` with
+only a minimal description and arrange a safe channel before sharing reproduction data.
 
 ## Trust boundary
 
