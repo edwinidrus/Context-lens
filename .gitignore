@@ -5,3 +5,6 @@ __pycache__/
 
 LINKEDIN-PLAN.md
 screenshot/*
+
+# Local private documents must never enter Git or packaged plugin artifacts.
+/tuv_vertrag/

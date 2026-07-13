@@ -9,6 +9,13 @@ from pathlib import Path
 
 MARKETPLACE_NAME = "context-lens-local"
 PLUGIN_NAME = "context-lens"
+PACKAGE_FILES = (
+    ".codex-plugin/plugin.json",
+    "LICENSE",
+    "scripts/analyzer.py",
+    "skills/context-lens-monitor/SKILL.md",
+    "skills/context-lens/SKILL.md",
+)
 
 
 def build(output):
@@ -24,14 +31,23 @@ def build(output):
         raise FileExistsError(f"output is not empty: {output}")
 
     plugin = output / "plugins" / PLUGIN_NAME
-    ignore = shutil.ignore_patterns(
-        ".git", ".agents", ".codex", "graphify-out", "__pycache__", "*.pyc", "*.pyo")
-    shutil.copytree(repo, plugin, ignore=ignore, dirs_exist_ok=False)
+    plugin.mkdir(parents=True, exist_ok=False)
+
+    # Package an explicit, reviewable allowlist instead of copying the working tree.
+    # This prevents local transcripts, contracts, credentials, editor files, and other
+    # untracked material from leaking into a marketplace artifact.
+    for relative in PACKAGE_FILES:
+        source = repo / relative
+        destination = plugin / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
 
     # Codex currently has no SessionEnd or Notification hook event. The source tree's
     # default hook file retains those events for Claude; the Codex artifact uses only
     # the event set documented and fixture-tested by this release.
-    shutil.copyfile(plugin / "hooks" / "codex-hooks.json", plugin / "hooks" / "hooks.json")
+    packaged_hooks = plugin / "hooks" / "hooks.json"
+    packaged_hooks.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(repo / "hooks" / "codex-hooks.json", packaged_hooks)
 
     manifest = {
         "name": MARKETPLACE_NAME,

@@ -10,10 +10,14 @@ sessions. It turns an invisible context window into actionable signals: how much
 use, which content has become dead weight, whether exploration is slowing down, and when the
 active instructions are becoming too distant.
 
-The current `v1.x` release provides full context-health analysis for **Claude Code** and a
+The current `v1.4.0` release provides full context-health analysis for **Claude Code** and a
 lower-fidelity lifecycle monitor for **Codex**. OpenCode and other agentic development tools remain
 roadmap targets until they have installable, tested adapters. See [VISION.md](VISION.md) for the
 product direction and roadmap.
+
+Context Lens is an early-stage open-source project. Its deterministic regression suite and plugin
+wiring are tested, but the scoring calibration still needs broader real-world validation before it
+should be treated as production-proven.
 
 ![Context Lens live dashboard](images/dashboard.png)
 
@@ -76,6 +80,17 @@ python3 scripts/render_loca_benchmark.py
 - **All-session monitor** — one local command center for active Claude Code and Codex sessions.
 - **Privacy-first operation** — Context Lens does not send transcripts or session summaries to an
   external service.
+
+## Privacy and security boundary
+
+Context Lens runs as the current local user through host lifecycle hooks. Claude analysis reads the
+local transcript selected by the host; the optional Codex experiment reads only numeric token
+metadata from the final 8 MiB of a rollout. Reports and privacy-minimized summaries stay under
+`~/.context-lens/` by default, and no project telemetry is transmitted.
+
+Installing a plugin means trusting its hook commands to run with your user permissions. Review the
+hook definitions before trusting them, keep sensitive fixtures anonymized, and report suspected
+vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 ## Installation and invocation by host
 
@@ -164,8 +179,8 @@ Build a clean Codex marketplace outside the clone, register it, and install the 
 directory must not already contain files; use a new versioned path when rebuilding.
 
 ```bash
-python3 scripts/build_codex_marketplace.py ~/.codex/context-lens-marketplace-1.3.0
-codex plugin marketplace add ~/.codex/context-lens-marketplace-1.3.0
+python3 scripts/build_codex_marketplace.py ~/.codex/context-lens-marketplace-1.4.0
+codex plugin marketplace add ~/.codex/context-lens-marketplace-1.4.0
 codex plugin add context-lens@context-lens-local
 ```
 
@@ -322,6 +337,7 @@ a pull request.
 - [Vision and roadmap](VISION.md)
 - [Manual test guide](MANUAL-TEST.md)
 - [Changelog](CHANGELOG.md)
+- [Security and privacy](SECURITY.md)
 - [MIT License](LICENSE)
 
 Built by [Edwin Hartarto](https://github.com/edwinidrus) as an open engineering project for the

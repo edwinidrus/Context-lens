@@ -464,8 +464,12 @@ def main():
     else:
         os.environ[analyzer.CODEX_EXPERIMENTAL_ENV] = saved_codex_experimental
 
-    codex_manifest = json.loads((Path(__file__).parent / ".codex-plugin" / "plugin.json").read_text())
-    assert codex_manifest["name"] == "context-lens" and codex_manifest["version"] == "1.3.0"
+    repo = Path(__file__).parent
+    codex_manifest = json.loads((repo / ".codex-plugin" / "plugin.json").read_text())
+    claude_manifest = json.loads((repo / ".claude-plugin" / "plugin.json").read_text())
+    assert codex_manifest["name"] == "context-lens"
+    assert codex_manifest["version"] == claude_manifest["version"] == "1.4.0"
+    assert (repo / "images" / "dashboard.png").is_file()
 
     with tempfile.TemporaryDirectory() as td:
         market_file = build_codex_marketplace.build(Path(td) / "marketplace")
@@ -473,6 +477,12 @@ def main():
         assert market["name"] == "context-lens-local"
         packaged = market_file.parents[2] / "plugins" / "context-lens"
         assert (packaged / ".codex-plugin" / "plugin.json").exists()
+        packaged_files = {
+            str(path.relative_to(packaged)) for path in packaged.rglob("*") if path.is_file()
+        }
+        expected_files = set(build_codex_marketplace.PACKAGE_FILES) | {"hooks/hooks.json"}
+        assert packaged_files == expected_files, packaged_files ^ expected_files
+        assert not any(path.suffix.lower() in {".pdf", ".env"} for path in packaged.rglob("*"))
         packaged_hooks = json.loads((packaged / "hooks" / "hooks.json").read_text())["hooks"]
         assert {"SessionStart", "UserPromptSubmit", "PermissionRequest", "PostToolUse",
                 "PreCompact", "PostCompact", "Stop"} == set(packaged_hooks)

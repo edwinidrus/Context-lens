@@ -5,6 +5,8 @@ All notable changes to Context-Lens. Versioning is [SemVer](https://semver.org);
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-07-13
+
 ### Added
 - Opt-in experimental Codex rollout metadata adapter for a partial context-token gauge and S1,
   with bounded numeric-only parsing, visible confidence limits, and schema-drift fallback.
@@ -17,6 +19,9 @@ All notable changes to Context-Lens. Versioning is [SemVer](https://semver.org);
 ### Changed
 - README now clearly separates the working Claude Code release from planned platform support and
   documents installation, scoring, privacy, development, and project direction.
+- Codex marketplace packaging now uses an explicit file allowlist so untracked or private working
+  tree content cannot enter the installable artifact.
+- Public security and privacy guidance now documents the local trust boundary and reporting path.
 
 ## [1.3.0] — 2026-07-12
 
