@@ -1,5 +1,12 @@
 # Security and privacy
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13601/badge)](https://www.bestpractices.dev/projects/13601)
+
+Context Lens holds the OpenSSF Best Practices **baseline-1** badge
+([project 13601](https://www.bestpractices.dev/en/projects/13601)), covering basic OSS hygiene:
+public version control, an OSS license, a working build/test pipeline, and a documented
+vulnerability-reporting process (this file).
+
 ## Supported versions
 
 Security fixes are applied to the latest release on `main`. Older local marketplace copies are not
