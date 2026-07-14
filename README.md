@@ -2,6 +2,7 @@
 
 [![Tests](https://github.com/edwinidrus/Context-lens/actions/workflows/test.yml/badge.svg)](https://github.com/edwinidrus/Context-lens/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13601/badge)](https://www.bestpractices.dev/projects/13601)
 
 **Know when an AI coding session is losing the plot — before the answer quality does.**
 
